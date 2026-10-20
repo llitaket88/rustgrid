@@ -77,11 +77,11 @@ impl Category {
 
     pub fn label(self) -> &'static str {
         match self {
-            Category::Tables => "common.table",
-            Category::Views => "common.view",
-            Category::Functions => "common.function",
-            Category::Queries => "common.query",
-            Category::Backups => "common.backup",
+            Category::Tables => "common.tables",
+            Category::Views => "common.views",
+            Category::Functions => "common.functions",
+            Category::Queries => "common.queries",
+            Category::Backups => "common.backups",
         }
     }
 
