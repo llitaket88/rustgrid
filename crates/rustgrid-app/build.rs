@@ -3,6 +3,11 @@
 //! dialog instead of empty strings.
 
 fn main() {
+    // `rust_i18n::i18n!` reads `locales/*.yml` while it expands, but neither Cargo nor rustc tracks
+    // those reads, so without this a locale edit alone would leave the previously embedded
+    // translations in the binary.
+    println!("cargo:rerun-if-changed=locales");
+
     #[cfg(target_os = "windows")]
     {
         use std::path::PathBuf;
