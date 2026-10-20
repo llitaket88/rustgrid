@@ -63,7 +63,7 @@ the connection tree, object lists, toolbars and dialogs all behave the way you a
 - **Import & export wizards** — Excel, CSV and TXT.
 - **Users & routines** — account and privilege management, plus stored-routine and view designers.
 - **Backup & restore** — RustGrid's own `.rgbak` container.
-- **Themes & languages** — light / dark / system, English / 简体中文.
+- **Themes & languages** — light / dark / system, English / 简体中文 / Русский.
 
 ## Build from source
 
