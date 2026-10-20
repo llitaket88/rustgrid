@@ -2660,11 +2660,12 @@ impl AppView {
     }
 }
 
-/// The language to start in on a first launch: a Chinese system locale maps to `zh-CN`, every
-/// other locale to English.
+/// The language to start in on a first launch: a Russian or Chinese system locale maps to that
+/// language, every other locale to English.
 fn detect_system_language() -> LanguageSetting {
     match sys_locale::get_locale() {
         Some(locale) if locale.to_ascii_lowercase().starts_with("zh") => LanguageSetting::ZhCn,
+        Some(locale) if locale.to_ascii_lowercase().starts_with("ru") => LanguageSetting::Ru,
         _ => LanguageSetting::En,
     }
 }

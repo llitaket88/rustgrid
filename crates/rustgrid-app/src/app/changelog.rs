@@ -83,6 +83,9 @@ pub(super) fn release_body_section(body: &str, language: LanguageSetting) -> Opt
     let marker = match language {
         LanguageSetting::En => MARKER_EN,
         LanguageSetting::ZhCn => MARKER_ZH,
+        // The repository keeps only an English and a Chinese changelog, so a Russian UI reads the
+        // English notes rather than showing nothing.
+        LanguageSetting::Ru => MARKER_EN,
     };
     let Some(start) = body.find(marker) else {
         let body = body.trim();

@@ -39,27 +39,34 @@ pub(super) const EDITOR_FONT_SIZES: &[u32] = &[10, 11, 12, 13, 14, 15, 16, 18, 2
 /// The SQL sample shown in the editor page's live preview.
 const EDITOR_PREVIEW_SQL: &str = "SELECT u.id, u.name\nFROM users u\nORDER BY u.id LIMIT 5;";
 
+/// The languages dropdown offers, in display order.
+const LANGUAGE_SETTINGS: [LanguageSetting; 3] = [
+    LanguageSetting::ZhCn,
+    LanguageSetting::En,
+    LanguageSetting::Ru,
+];
+
 fn language_label(setting: LanguageSetting) -> String {
     match setting {
         LanguageSetting::En => "English".to_string(),
         LanguageSetting::ZhCn => "简体中文".to_string(),
+        LanguageSetting::Ru => "Русский".to_string(),
     }
 }
 
-/// The two selectable languages as combo rows, keyed by locale code.
+/// The selectable languages as combo rows, keyed by locale code.
 fn language_options() -> Vec<ComboOption> {
-    [LanguageSetting::ZhCn, LanguageSetting::En]
+    LANGUAGE_SETTINGS
         .into_iter()
         .map(|setting| ComboOption::new(setting.locale(), language_label(setting)))
         .collect()
 }
 
 fn language_from_locale(locale: &str) -> LanguageSetting {
-    if locale == LanguageSetting::En.locale() {
-        LanguageSetting::En
-    } else {
-        LanguageSetting::ZhCn
-    }
+    LANGUAGE_SETTINGS
+        .into_iter()
+        .find(|setting| setting.locale() == locale)
+        .unwrap_or_default()
 }
 
 /// The editor font families, the built-in default first.
