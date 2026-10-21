@@ -121,8 +121,9 @@ impl Default for ConnectionForm {
 }
 
 impl ConnectionForm {
-    /// A fresh form for a newly chosen engine, pre-filled with that engine's default port.
-    pub fn for_driver(driver: DriverId, default_port: u16) -> Self {
+    /// A fresh form for a newly chosen engine, pre-filled with that engine's default port and the
+    /// username its server conventionally starts with (`root`, `postgres`, `sa`, ...).
+    pub fn for_driver(driver: DriverId, default_port: u16, default_username: &str) -> Self {
         Self {
             driver,
             port: if default_port == 0 {
@@ -130,6 +131,7 @@ impl ConnectionForm {
             } else {
                 default_port.to_string()
             },
+            username: default_username.to_string(),
             ..Self::default()
         }
     }
@@ -481,6 +483,27 @@ mod tests {
             options.get("oracle.config_dir").map(String::as_str),
             Some("/etc/oracle")
         );
+    }
+
+    /// A new connection form starts with the engine's own default port and username, so a
+    /// PostgreSQL or SQL Server connection no longer opens with MySQL's `root`.
+    #[test]
+    fn a_new_form_uses_the_engines_defaults() {
+        let mysql = ConnectionForm::for_driver(DriverId::new("mysql"), 3306, "root");
+        assert_eq!(mysql.username, "root");
+        assert_eq!(mysql.port, "3306");
+
+        let postgres = ConnectionForm::for_driver(DriverId::new("postgresql"), 5432, "postgres");
+        assert_eq!(postgres.username, "postgres");
+        assert_eq!(postgres.port, "5432");
+
+        let sqlserver = ConnectionForm::for_driver(DriverId::new("sqlserver"), 1433, "sa");
+        assert_eq!(sqlserver.username, "sa");
+        assert_eq!(sqlserver.port, "1433");
+
+        // An engine without a conventional account leaves the field empty for the user to fill.
+        let oracle = ConnectionForm::for_driver(DriverId::new("oracle"), 1521, "");
+        assert!(oracle.username.is_empty());
     }
 
     /// An ODBC connection is valid with a DSN or a connection string; the driver-name path needs a

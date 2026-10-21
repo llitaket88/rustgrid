@@ -335,6 +335,7 @@ impl TreePane {
             selected: None,
             selected_table: None,
             rename_row: None,
+            group_renaming: false,
             focus: cx.focus_handle(),
             theme: Theme::dark(),
             visible_ids: Vec::new(),
@@ -503,9 +504,19 @@ impl TreePane {
 
     /// Typing a name jumps to the next row whose label starts with it; a pause starts a new name.
     /// Returns whether the keystroke was used.
+    ///
+    /// The tree only ever *reads* the keystroke: it must not claim it (`stop_propagation`), because
+    /// gpui treats a claimed key-down as handled and the Windows backend then skips
+    /// `TranslateMessage`, so the matching character message never reaches an in-place editor
+    /// inside the tree. Typing therefore belongs to an open rename editor and does nothing here.
     fn nav_typeahead(&mut self, keystroke: &Keystroke, cx: &mut Context<'_, Self>) -> bool {
         let modifiers = keystroke.modifiers;
-        if modifiers.control || modifiers.alt || modifiers.platform || self.rename_row.is_some() {
+        if modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || self.rename_row.is_some()
+            || self.group_renaming
+        {
             return false;
         }
         let Some(character) = keystroke
@@ -540,9 +551,9 @@ impl TreePane {
     /// (arrows, Page Up/Down, Home/End, Enter, F2, Ctrl+A) are keymap commands handled by the
     /// `tree_*` actions.
     fn tree_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.nav_typeahead(&event.keystroke, cx) {
-            cx.stop_propagation();
-        }
+        // Never consume the keystroke: type-ahead only moves the highlight, while claiming the key
+        // would suppress the character the platform delivers to the tree's rename editor.
+        self.nav_typeahead(&event.keystroke, cx);
     }
 
     /// Ctrl/Cmd+A selects every visible connection/group row.
@@ -1989,7 +2000,7 @@ impl TreePane {
 
 impl Render for TreePane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        let (theme, connections, layout, rename, group_rename, tree_selection) = {
+        let (theme, connections, layout, rename, group_rename, group_renaming, tree_selection) = {
             let Some(app) = self.app.upgrade() else {
                 return div().into_any_element();
             };
@@ -2002,11 +2013,13 @@ impl Render for TreePane {
                 app.group_rename
                     .as_ref()
                     .map(|edit| (edit.id, edit.input.clone())),
+                app.group_rename.is_some(),
                 app.tree_selection.items(),
             )
         };
         self.theme = theme;
         self.rename_row = rename;
+        self.group_renaming = group_renaming;
         self.selection = tree_selection.into_iter().collect();
 
         // The row renderers record every drawn row here, in draw order (see `nav_row`).

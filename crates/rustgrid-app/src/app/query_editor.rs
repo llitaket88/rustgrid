@@ -259,10 +259,32 @@ impl AppView {
         sql: &str,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        self.render_sql_preview_marked(key, sql, Vec::new(), cx)
+    }
+
+    /// A read-only SQL preview with extra highlights (the transfer window's DDL diff panes). The
+    /// wrapper implies selection and Ctrl+C, which hand-drawn text rows never got.
+    pub(super) fn render_sql_preview_marked(
+        &mut self,
+        key: &str,
+        sql: &str,
+        decorations: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         if let Some(editor) = self.preview_editors.get(key).cloned() {
-            if editor.read(cx).text() != sql {
+            let text_changed = editor.read(cx).text() != sql;
+            let decorations_changed = self.preview_decorations.get(key) != Some(&decorations);
+            if text_changed || decorations_changed {
                 let sql = sql.to_string();
-                editor.update(cx, |editor, cx| editor.set_text(sql, cx));
+                let applied = decorations.clone();
+                editor.update(cx, |editor, cx| {
+                    if text_changed {
+                        editor.set_text(sql, cx);
+                    }
+                    editor.set_decorations(applied, cx);
+                });
+                self.preview_decorations
+                    .insert(key.to_string(), decorations);
             }
             return editor.into_any_element();
         }
@@ -283,7 +305,13 @@ impl AppView {
                         .unwrap_or(false)
                 }))
         });
-        editor.update(cx, |editor, cx| editor.set_text(sql, cx));
+        let applied = decorations.clone();
+        editor.update(cx, |editor, cx| {
+            editor.set_text(sql, cx);
+            editor.set_decorations(applied, cx);
+        });
+        self.preview_decorations
+            .insert(key.to_string(), decorations);
         self.preview_editors.insert(key.to_string(), editor.clone());
         editor.into_any_element()
     }
@@ -361,6 +389,9 @@ impl AppView {
                 cx.new(|cx| {
                     ui::SqlEditor::new(cx).options(ui::SqlEditorOptions {
                         language: "text".into(),
+                        // The result/信息 log is status text, not the query being edited: it
+                        // stays at 12px when the editor font is zoomed or changed in Options.
+                        font_size: 12.0,
                         line_number: false,
                         readonly: true,
                         ..Default::default()

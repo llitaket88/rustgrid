@@ -257,13 +257,16 @@ impl Connection for MysqlConnection {
 
         let (where_clause, binds) = filter_clause(&page.filter);
 
-        let total_rows = self
-            .scalar_u64(
+        let total_rows = if page.skip_total {
+            None
+        } else {
+            self.scalar_u64(
                 format!("SELECT COUNT(*) FROM {qualified}{where_clause}"),
                 &binds,
             )
             .await
-            .ok();
+            .ok()
+        };
 
         let page_sql = format!(
             "SELECT * FROM {qualified}{where_clause}{} LIMIT ? OFFSET ?",
@@ -625,6 +628,10 @@ impl Connection for MysqlConnection {
                 name,
                 TableStatus {
                     engine,
+                    // `information_schema.tables.table_rows` is an InnoDB estimate and MySQL 8
+                    // caches it for `information_schema_stats_expiry` seconds. It is routinely 0
+                    // for a table with thousands of rows (and a refresh returns the same cached
+                    // value), so the exact count is filled in below.
                     rows: optional_u64(row, 2),
                     auto_increment: optional_u64(row, 3),
                     updated,
@@ -633,6 +640,41 @@ impl Connection for MysqlConnection {
                     ..TableStatus::default()
                 },
             ));
+        }
+
+        // One `COUNT(*)` per table, batched into a single UNION ALL statement. The object list
+        // shows the real row count instead of the optimizer's estimate; a database with many
+        // tables pays one round trip and one scan per table.
+        if !statuses.is_empty() {
+            let mut sql = String::new();
+            for (index, (name, _)) in statuses.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(" UNION ALL ");
+                }
+                sql.push_str(&format!(
+                    "SELECT {} AS table_name, COUNT(*) AS exact_rows FROM {}.{}",
+                    quote_literal(name),
+                    quote_identifier(database),
+                    quote_identifier(name)
+                ));
+            }
+            // Best-effort: if a table disappears between the catalog read and the count (or the
+            // user's database forbids reading one), keep the catalog estimate instead of failing
+            // the whole object list.
+            let count_rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+            for row in &count_rows {
+                let name: String = row.try_get(0).map_err(map_query_error)?;
+                let count = optional_u64(row, 1).unwrap_or(0);
+                if let Some((_, status)) = statuses
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == &name)
+                {
+                    status.rows = Some(count);
+                }
+            }
         }
         Ok(statuses)
     }
@@ -878,7 +920,13 @@ impl Connection for MysqlConnection {
 
             let numeric = data_type.eq_ignore_ascii_case("decimal")
                 || data_type.eq_ignore_ascii_case("numeric");
-            let length = if let Some(length) = char_length {
+            // `TEXT`/`BLOB` columns report their byte capacity as `character_maximum_length` (65535
+            // for `text`, 16777215 for `mediumtext`). That is not a definition length: rendering it
+            // back as `text(65535)` makes MySQL pick the smallest type that fits 65535 *characters*,
+            // which under utf8mb4 is `mediumtext` — so the column could never converge after a sync.
+            let length = if type_ignores_length(&data_type) {
+                "0".to_string()
+            } else if let Some(length) = char_length {
                 length.to_string()
             } else if numeric {
                 precision
@@ -902,13 +950,28 @@ impl Connection for MysqlConnection {
                 .map(|index| extra[index..].trim().to_string())
                 .unwrap_or_default();
 
+            // `information_schema` reports both an explicit empty-string default and no default as
+            // an empty string; only `None` means SQL NULL. Keeping the empty string as-is made
+            // `DEFAULT ''` indistinguishable from `DEFAULT NULL`, so the structure diff reported
+            // "no changes" while the DDL panes still showed the difference. Store the quoted empty
+            // string explicitly so both the diff and `format_default` see a real literal.
+            let default = default
+                .map(|value| {
+                    if value.is_empty() {
+                        "''".to_string()
+                    } else {
+                        value
+                    }
+                })
+                .unwrap_or_default();
+
             columns.push(ColumnDef {
                 name,
                 data_type,
                 length,
                 decimals,
                 nullable: nullable.eq_ignore_ascii_case("YES"),
-                default: default.unwrap_or_default(),
+                default,
                 primary_key: key.eq_ignore_ascii_case("PRI"),
                 auto_increment: extra_lower.contains("auto_increment"),
                 identity: String::new(),
@@ -1712,6 +1775,25 @@ fn primary_columns(schema: &TableSchema) -> Vec<String> {
         .collect()
 }
 
+/// Whether a column type's `(length)` is part of its definition.
+///
+/// MySQL treats `TEXT(M)`/`BLOB(M)` as "create the smallest type that fits M characters/bytes", so
+/// `text(65535)` under utf8mb4 becomes `mediumtext`. Those types therefore never carry a length:
+/// their catalog bytes (`character_maximum_length`) are not a definition the server accepts back.
+fn type_ignores_length(data_type: &str) -> bool {
+    matches!(
+        data_type.trim().to_ascii_lowercase().as_str(),
+        "tinytext"
+            | "text"
+            | "mediumtext"
+            | "longtext"
+            | "tinyblob"
+            | "blob"
+            | "mediumblob"
+            | "longblob"
+    )
+}
+
 /// Render one column definition for `CREATE`/`ALTER TABLE`.
 fn column_sql(column: &ColumnDef) -> String {
     let mut sql = quote_identifier(&column.name);
@@ -1720,7 +1802,7 @@ fn column_sql(column: &ColumnDef) -> String {
 
     let length = column.length.trim();
     let decimals = column.decimals.trim();
-    if !length.is_empty() && length != "0" {
+    if !length.is_empty() && length != "0" && !type_ignores_length(&column.data_type) {
         sql.push('(');
         sql.push_str(length);
         if !decimals.is_empty() && decimals != "0" {
@@ -1763,7 +1845,7 @@ fn column_sql(column: &ColumnDef) -> String {
     });
 
     if generated.is_empty() {
-        if let Some(default) = format_default(&column.default) {
+        if let Some(default) = format_default(column, &column.default) {
             sql.push(' ');
             sql.push_str(&default);
         }
@@ -1775,9 +1857,11 @@ fn column_sql(column: &ColumnDef) -> String {
         sql.push(' ');
         sql.push_str(column.extra.trim());
     }
-    if !column.comment.trim().is_empty() {
+    if !column.comment.is_empty() {
+        // A comment is compared verbatim by the structure diff, so its own leading/trailing
+        // spaces are part of the definition and must be written back unchanged.
         sql.push_str(" COMMENT ");
-        sql.push_str(&quote_literal(column.comment.trim()));
+        sql.push_str(&quote_literal(&column.comment));
     }
     sql
 }
@@ -1903,16 +1987,24 @@ fn table_options_sql(options: &TableOptions) -> String {
     if !options.auto_increment.trim().is_empty() && options.auto_increment.trim() != "0" {
         parts.push(format!("AUTO_INCREMENT={}", options.auto_increment.trim()));
     }
-    if !options.comment.trim().is_empty() {
-        parts.push(format!("COMMENT={}", quote_literal(options.comment.trim())));
+    if !options.comment.is_empty() {
+        // Like a column comment, the table comment's own spaces are part of the definition.
+        parts.push(format!("COMMENT={}", quote_literal(&options.comment)));
     }
     parts.join(" ")
 }
 
 /// Render a `DEFAULT ...` fragment for a column, quoting values and leaving expressions and
-/// numbers bare.
-fn format_default(value: &str) -> Option<String> {
-    let value = value.trim();
+/// numeric literals bare.
+///
+/// Whether a value is numeric comes from the **column's type**, not from the characters of the
+/// value: MySQL reports a `varchar` default `'00'` as the text `00`, and writing it back unquoted
+/// (`DEFAULT 00`) makes the server store the number 0 — so the target kept `'0'` and a structure
+/// sync could never converge on a column whose string default was all digits.
+///
+/// The value is used verbatim: a default of a single space is a real default, and trimming it
+/// dropped the `DEFAULT` clause entirely.
+fn format_default(column: &ColumnDef, value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
@@ -1920,19 +2012,56 @@ fn format_default(value: &str) -> Option<String> {
     if upper == "NULL" {
         return Some("DEFAULT NULL".to_string());
     }
-    let expression = upper.starts_with("CURRENT_TIMESTAMP")
-        || upper.starts_with("CURRENT_DATE")
-        || upper.starts_with("CURRENT_TIME")
-        || upper.starts_with("NOW(")
+    // `CURRENT_TIMESTAMP` & co. are only expressions for temporal columns; a `varchar` default
+    // with that text is a literal.
+    let temporal = matches!(
+        column.data_type.trim().to_ascii_lowercase().as_str(),
+        "timestamp" | "datetime" | "date" | "time"
+    );
+    let expression = (temporal
+        && (upper.starts_with("CURRENT_TIMESTAMP")
+            || upper.starts_with("CURRENT_DATE")
+            || upper.starts_with("CURRENT_TIME")
+            || upper.starts_with("NOW(")))
         || upper.starts_with("UUID(")
         || value.starts_with('(')
-        || value.parse::<f64>().is_ok()
+        || upper.starts_with("B'")
+        || upper.starts_with("0X")
+        // MariaDB reports a string default already quoted; MySQL does not.
         || (value.len() >= 2 && value.starts_with('\'') && value.ends_with('\''));
     if expression {
-        Some(format!("DEFAULT {value}"))
-    } else {
-        Some(format!("DEFAULT {}", quote_literal(value)))
+        return Some(format!("DEFAULT {value}"));
     }
+    if type_is_numeric(&column.data_type) && value.trim().parse::<f64>().is_ok() {
+        return Some(format!("DEFAULT {}", value.trim()));
+    }
+    Some(format!("DEFAULT {}", quote_literal(value)))
+}
+
+/// Whether a column of this type takes a numeric default, so it is written without quotes.
+fn type_is_numeric(data_type: &str) -> bool {
+    let data_type = data_type.trim().to_ascii_lowercase();
+    // Listed explicitly rather than by suffix: `point`/`multipoint` are geometry types, and a
+    // suffix test would read them as integers.
+    matches!(
+        data_type.as_str(),
+        "tinyint"
+            | "smallint"
+            | "mediumint"
+            | "int"
+            | "integer"
+            | "bigint"
+            | "serial"
+            | "decimal"
+            | "numeric"
+            | "dec"
+            | "fixed"
+            | "float"
+            | "double"
+            | "real"
+            | "bit"
+            | "year"
+    )
 }
 
 fn quote_literal(value: &str) -> String {
@@ -2726,11 +2855,12 @@ fn decode_cell(row: &MySqlRow, index: usize) -> CellValue {
 mod tests {
     use super::{
         Engine, column_sql, filter_clause, format_default, index_sql, order_clause,
-        returns_result_set, schema_sql, split_statements, trigger_sql,
+        returns_result_set, schema_sql, split_statements, table_options_sql, trigger_sql,
     };
     use rustgrid_core::{
         CheckDef, ColumnDef, FilterCondition, FilterConjunction, FilterGroup, FilterNode,
-        FilterOperator, IndexColumnDef, IndexDef, PageRequest, SortColumn, TableSchema, TriggerDef,
+        FilterOperator, IndexColumnDef, IndexDef, PageRequest, SortColumn, TableOptions,
+        TableSchema, TriggerDef,
     };
 
     #[test]
@@ -2789,14 +2919,103 @@ mod tests {
 
     #[test]
     fn formats_default_values() {
-        assert_eq!(format_default("").as_deref(), None);
-        assert_eq!(format_default("NULL").as_deref(), Some("DEFAULT NULL"));
+        let column = |data_type: &str| ColumnDef {
+            name: "c".to_string(),
+            data_type: data_type.to_string(),
+            ..Default::default()
+        };
+        let varchar = column("varchar");
+        let int = column("int");
+        let timestamp = column("timestamp");
+
+        assert_eq!(format_default(&varchar, ""), None);
         assert_eq!(
-            format_default("CURRENT_TIMESTAMP").as_deref(),
+            format_default(&varchar, "NULL").as_deref(),
+            Some("DEFAULT NULL")
+        );
+        assert_eq!(
+            format_default(&timestamp, "CURRENT_TIMESTAMP").as_deref(),
             Some("DEFAULT CURRENT_TIMESTAMP")
         );
-        assert_eq!(format_default("5").as_deref(), Some("DEFAULT 5"));
-        assert_eq!(format_default("abc").as_deref(), Some("DEFAULT 'abc'"));
+        assert_eq!(format_default(&int, "5").as_deref(), Some("DEFAULT 5"));
+        assert_eq!(
+            format_default(&varchar, "abc").as_deref(),
+            Some("DEFAULT 'abc'")
+        );
+        // A numeric-looking string default stays a string: MySQL stores `DEFAULT 00` as `'0'`,
+        // which left a synced varchar column different from its source forever.
+        assert_eq!(
+            format_default(&varchar, "00").as_deref(),
+            Some("DEFAULT '00'")
+        );
+        assert_eq!(
+            format_default(&varchar, "0").as_deref(),
+            Some("DEFAULT '0'")
+        );
+        // A default that is only whitespace is a value, not "no default".
+        assert_eq!(
+            format_default(&varchar, " ").as_deref(),
+            Some("DEFAULT ' '")
+        );
+    }
+
+    #[test]
+    fn keeps_comment_spaces_in_the_definition() {
+        let column = ColumnDef {
+            name: "flow".to_string(),
+            data_type: "bigint".to_string(),
+            comment: "monthly b ".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            column_sql(&column),
+            "`flow` bigint NOT NULL COMMENT 'monthly b '"
+        );
+
+        let options = TableOptions {
+            comment: " table note ".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(table_options_sql(&options), "COMMENT=' table note '");
+    }
+
+    #[test]
+    fn alters_string_defaults_and_comments_so_they_converge() {
+        // The pair a structure sync could never converge on: a `varchar` default of `00` (written
+        // back as the number 0) and a comment whose trailing space was trimmed away.
+        let original = TableSchema {
+            columns: vec![
+                ColumnDef {
+                    name: "user_type".to_string(),
+                    data_type: "varchar".to_string(),
+                    length: "2".to_string(),
+                    nullable: true,
+                    default: "0".to_string(),
+                    comment: "用户类型".to_string(),
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "free_flow".to_string(),
+                    data_type: "bigint".to_string(),
+                    nullable: true,
+                    comment: "月度流量 单位 b".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut modified = original.clone();
+        modified.columns[0].default = "00".to_string();
+        modified.columns[1].comment = "月度流量 单位 b ".to_string();
+
+        let sql = schema_sql(Engine::MySql, "db", "t", Some(&original), &modified);
+        assert!(
+            sql.contains(
+                "MODIFY COLUMN `user_type` varchar(2) NULL DEFAULT '00' COMMENT '用户类型'"
+            ),
+            "{sql}"
+        );
+        assert!(sql.contains("COMMENT '月度流量 单位 b '"), "{sql}");
     }
 
     #[test]
@@ -2815,6 +3034,86 @@ mod tests {
         assert!(sql.starts_with("CREATE TABLE `db`.`t`"));
         assert!(sql.contains("`id` int NOT NULL"));
         assert!(sql.contains("PRIMARY KEY (`id`)"));
+    }
+
+    #[test]
+    fn distinguishes_an_empty_string_default_from_no_default() {
+        let column = ColumnDef {
+            name: "name".to_string(),
+            data_type: "varchar".to_string(),
+            length: "64".to_string(),
+            default: "''".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_default(&column, &column.default),
+            Some("DEFAULT ''".to_string())
+        );
+        assert_eq!(format_default(&column, ""), None);
+    }
+
+    #[test]
+    fn creates_a_table_mapped_from_postgres() {
+        use rustgrid_core::{DriverDialect, map_schema};
+
+        let source = TableSchema {
+            columns: vec![
+                ColumnDef {
+                    name: "id".to_string(),
+                    data_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    auto_increment: true,
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "name".to_string(),
+                    data_type: "varchar".to_string(),
+                    length: "255".to_string(),
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "payload".to_string(),
+                    data_type: "bytea".to_string(),
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "created".to_string(),
+                    data_type: "timestamptz".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mapped = map_schema(&source, DriverDialect::Postgres, DriverDialect::Mysql);
+        let sql = schema_sql(Engine::MySql, "db", "users", None, &mapped);
+        assert!(sql.contains("`id` bigint NOT NULL AUTO_INCREMENT"), "{sql}");
+        assert!(sql.contains("`name` varchar(255)"), "{sql}");
+        assert!(sql.contains("`payload` longblob"), "{sql}");
+        assert!(sql.contains("`created` timestamp"), "{sql}");
+    }
+
+    #[test]
+    fn renders_no_length_for_text_and_blob_types() {
+        let column = |data_type: &str, length: &str| ColumnDef {
+            name: "c".to_string(),
+            data_type: data_type.to_string(),
+            length: length.to_string(),
+            nullable: true,
+            ..Default::default()
+        };
+        // `text(65535)` makes MySQL choose the smallest type that fits 65535 characters, which is
+        // `mediumtext` under utf8mb4 — the sync could never converge on it.
+        assert_eq!(column_sql(&column("text", "65535")), "`c` text NULL");
+        assert_eq!(
+            column_sql(&column("mediumtext", "16777215")),
+            "`c` mediumtext NULL"
+        );
+        assert_eq!(column_sql(&column("blob", "65535")), "`c` blob NULL");
+        assert_eq!(
+            column_sql(&column("varchar", "255")),
+            "`c` varchar(255) NULL"
+        );
     }
 
     #[test]

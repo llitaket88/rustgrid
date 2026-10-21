@@ -3200,14 +3200,9 @@ impl AppView {
             .as_ref()
             .is_some_and(|handle| handle.window_id() == id)
         {
-            // Closing the transfer window stops its run, exactly like closing the Backup window.
-            self.sync
-                .cancel
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.sync.running = false;
-            self.sync.options_open = false;
-            self.sync.config_name_input = None;
-            self.sync.needs_refresh = false;
+            // Closing the transfer window stops its run and any comparison still walking the
+            // tables, and drops the preview editors it created.
+            self.sync_window_closed(cx);
             self.sync_window = None;
             cx.notify();
             return;
@@ -4132,6 +4127,16 @@ impl Render for BackupWindow {
 /// The child window's titlebar. The OS titlebar is suppressed (`appears_transparent`) so this
 /// chrome matches the app's theme; dragging and the min/max/close controls mirror the main window.
 pub(super) fn backup_window_titlebar(title: String, theme: Theme) -> impl IntoElement {
+    titled_window_titlebar(title, theme, |window, _cx| window.remove_window())
+}
+
+/// A child-window titlebar whose close button runs `on_close` instead of removing the window
+/// unconditionally (the transfer window asks before discarding unsaved configuration edits).
+pub(super) fn titled_window_titlebar(
+    title: String,
+    theme: Theme,
+    on_close: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_row()
@@ -4187,7 +4192,7 @@ pub(super) fn backup_window_titlebar(title: String, theme: Theme) -> impl IntoEl
                     "backup-titlebar-close",
                     "✕",
                     theme,
-                    |window, _cx| window.remove_window(),
+                    on_close,
                 )),
         )
 }

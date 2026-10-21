@@ -239,13 +239,16 @@ impl Connection for SqliteConnection {
         let (where_clause, binds) = filter_clause(&page.filter);
         let order = order_clause(&page);
 
-        let total_rows = self
-            .scalar_u64(
+        let total_rows = if page.skip_total {
+            None
+        } else {
+            self.scalar_u64(
                 format!("SELECT COUNT(*) FROM {qualified}{where_clause}"),
                 &binds,
             )
             .await
-            .ok();
+            .ok()
+        };
 
         let sql = format!("SELECT * FROM {qualified}{where_clause}{order} LIMIT ? OFFSET ?");
         let mut query = sqlx::query(AssertSqlSafe(sql));
@@ -1810,6 +1813,44 @@ mod tests {
         let (clause, binds) = filter_clause(&filter);
         assert_eq!(clause, " WHERE \"id\" > ? AND (\"a\" = ? OR \"b\" = ?)");
         assert_eq!(binds, vec!["0", "1", "2"]);
+    }
+
+    #[test]
+    fn creates_a_table_mapped_from_mysql() {
+        use rustgrid_core::{ColumnDef, DriverDialect, TableSchema, map_schema};
+
+        let source = TableSchema {
+            columns: vec![
+                ColumnDef {
+                    name: "id".to_string(),
+                    data_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    auto_increment: true,
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "name".to_string(),
+                    data_type: "varchar".to_string(),
+                    length: "255".to_string(),
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "payload".to_string(),
+                    data_type: "longblob".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mapped = map_schema(&source, DriverDialect::Mysql, DriverDialect::Sqlite);
+        let sql = create_table_statement("users", &mapped);
+        assert!(
+            sql.contains("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT"),
+            "{sql}"
+        );
+        assert!(sql.contains("\"name\" TEXT"), "{sql}");
+        assert!(sql.contains("\"payload\" BLOB"), "{sql}");
     }
 
     #[test]

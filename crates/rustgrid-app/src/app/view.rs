@@ -415,12 +415,11 @@ impl AppView {
         if let Ok(query_result) = &result
             && query_result.has_result_set
         {
-            let Some(connection) = self
-                .queries
-                .get(index)
-                .and_then(|tab| tab.connection_index)
-                .and_then(|i| self.connection_arc(i))
-            else {
+            let connection_index = self.queries.get(index).and_then(|tab| tab.connection_index);
+            let dialect = connection_index
+                .map(|connection_index| self.driver_dialect(connection_index))
+                .unwrap_or_default();
+            let Some(connection) = connection_index.and_then(|i| self.connection_arc(i)) else {
                 return;
             };
             let columns = query_result.columns.clone();
@@ -433,6 +432,7 @@ impl AppView {
             let state = GridState {
                 id,
                 connection,
+                dialect,
                 connection_name,
                 connection_id: String::new(),
                 database,

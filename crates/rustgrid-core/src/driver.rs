@@ -24,6 +24,13 @@ pub trait Driver: Send + Sync {
 
     fn default_port(&self) -> u16;
 
+    /// The username pre-filled by a New Connection form for this engine, or `""` when the engine
+    /// has no conventional default account (the field then starts empty). It is only a starting
+    /// value: every engine accepts any user name.
+    fn default_username(&self) -> &'static str {
+        ""
+    }
+
     /// Presentation/capability metadata for this driver, used by the New Connection menu, the
     /// connection-tree icon and the UI's capability checks.
     ///

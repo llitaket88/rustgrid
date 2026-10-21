@@ -78,6 +78,86 @@ async fn live_catalog_and_page() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a live MySQL server (set RUSTGRID_MYSQL_PASSWORD)"]
+async fn live_table_statuses_report_exact_row_counts() {
+    let driver = rustgrid_mysql::MysqlDriver::new();
+    let connection = driver
+        .connect(&config())
+        .await
+        .expect("connect to the live server");
+
+    let Some(database) = connection
+        .list_databases()
+        .await
+        .expect("list databases")
+        .into_iter()
+        .find(|database| database.name == "test")
+    else {
+        return;
+    };
+    let statuses = connection
+        .table_statuses(&database.name)
+        .await
+        .expect("load table statuses");
+    assert!(!statuses.is_empty(), "expected tables in test");
+    for (name, status) in statuses {
+        let sql = format!("SELECT COUNT(*) FROM `{}`", name.replace('`', "``"));
+        let result = connection
+            .execute_query(Some(&database.name), &sql)
+            .await
+            .expect("count rows");
+        let actual = result.rows[0][0]
+            .as_display()
+            .parse::<u64>()
+            .expect("numeric count");
+        assert_eq!(
+            status.rows,
+            Some(actual),
+            "{name} should report its exact row count"
+        );
+    }
+
+    connection.close().await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a live MySQL server (set RUSTGRID_MYSQL_PASSWORD)"]
+async fn live_schema_keeps_an_explicit_empty_string_default() {
+    let driver = rustgrid_mysql::MysqlDriver::new();
+    let connection = driver
+        .connect(&config())
+        .await
+        .expect("connect to the live server");
+
+    let Some(database) = connection
+        .list_databases()
+        .await
+        .expect("list databases")
+        .into_iter()
+        .find(|database| database.name == "test")
+    else {
+        return;
+    };
+    let schema = connection
+        .table_schema(&database.name, "gen_table")
+        .await
+        .expect("load table schema");
+    let Some(column) = schema
+        .columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case("table_name"))
+    else {
+        return;
+    };
+    assert_eq!(
+        column.default, "''",
+        "DEFAULT '' must not collapse into DEFAULT NULL"
+    );
+
+    connection.close().await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a live MySQL server (set RUSTGRID_MYSQL_PASSWORD)"]
 async fn live_multi_statement_returns_every_result_set() {
     let driver = rustgrid_mysql::MysqlDriver::new();
     let connection = driver

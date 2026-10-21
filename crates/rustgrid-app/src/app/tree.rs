@@ -50,12 +50,16 @@ impl AppView {
         cx: &mut Context<'_, Self>,
     ) {
         self.editing = None;
-        let default_port = self
+        let (default_port, default_username) = self
             .registry
             .get(&driver)
-            .map(|driver| driver.default_port())
-            .unwrap_or(3306);
-        self.show_form(ConnectionForm::for_driver(driver, default_port), window, cx);
+            .map(|driver| (driver.default_port(), driver.default_username()))
+            .unwrap_or((3306, "root"));
+        self.show_form(
+            ConnectionForm::for_driver(driver, default_port, default_username),
+            window,
+            cx,
+        );
     }
 
     pub(super) fn open_edit_form(
@@ -1436,6 +1440,7 @@ impl AppView {
         let state = GridState {
             id,
             connection,
+            dialect: self.driver_dialect(connection_index),
             connection_name,
             connection_id,
             database,
@@ -1551,6 +1556,69 @@ impl AppView {
                             &close_name,
                             cx,
                         );
+                        view.reload_tables(connection_index, database_index, cx);
+                    }
+                    Err(error) => view.error_dialog = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Empty or truncate every selected table in one pass. Like the multi-drop path, the first
+    /// failure is surfaced but the remaining tables are still attempted.
+    pub(super) fn run_table_operations(
+        &mut self,
+        connection_index: usize,
+        database_index: usize,
+        names: Vec<String>,
+        operation: TableOperation,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(connection) = self.connection_arc(connection_index) else {
+            return;
+        };
+        let Some(database) = self.database_name(connection_index, database_index) else {
+            return;
+        };
+
+        let runtime = self.runtime.clone();
+        let close_connection = connection.clone();
+        let close_database = database.clone();
+        let operation_names = names.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match runtime
+                .spawn(async move {
+                    let mut failures = Vec::new();
+                    for name in &operation_names {
+                        let result = match operation {
+                            TableOperation::Empty => connection.empty_table(&database, name).await,
+                            TableOperation::Truncate => {
+                                connection.truncate_table(&database, name).await
+                            }
+                        };
+                        if let Err(error) = result {
+                            failures.push(format!("{name}: {error}"));
+                        }
+                    }
+                    Ok::<Vec<String>, Error>(failures)
+                })
+                .await
+            {
+                Ok(inner) => inner,
+                Err(error) => Err(Error::other(error)),
+            };
+
+            let _ = this.update(cx, |view, cx| {
+                match result {
+                    Ok(failures) => {
+                        for name in &names {
+                            view.refresh_table_grids(&close_connection, &close_database, name, cx);
+                        }
+                        if !failures.is_empty() {
+                            view.error_dialog = Some(failures.join("\n"));
+                        }
                         view.reload_tables(connection_index, database_index, cx);
                     }
                     Err(error) => view.error_dialog = Some(error.to_string()),

@@ -1,5 +1,6 @@
 use super::grid::filter_node;
 use super::*;
+use gpui_kit::component::spinner::Spinner;
 
 /// The per-row actions of the filter builder.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,20 @@ fn filter_path_key(path: &[usize]) -> String {
 }
 
 impl GridView {
+    /// The grid's running-fetch indicator: one spinner, dropped into a bar the grid already
+    /// draws — the toolbar when it has one, the status bar otherwise. It is never a row of its
+    /// own, so a fetch starting or ending shifts nothing under the pointer.
+    pub(super) fn render_loading_spinner(&self) -> impl IntoElement {
+        let theme = self.theme;
+        div()
+            .id("grid-loading")
+            .flex_none()
+            .flex()
+            .items_center()
+            .tooltip(ui::text_tooltip(t!("common.loading").to_string()))
+            .child(Spinner::new().color(rgb(theme.text_muted).into()))
+    }
+
     pub(super) fn render_grid_toolbar(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let theme = self.theme;
         div()
@@ -110,6 +125,12 @@ impl GridView {
                         false,
                         cx.listener(|this, _event, _window, cx| this.toggle_field_filter(cx)),
                     ))
+            })
+            // The spinner sits at the toolbar's far end while a fetch runs; the toolbar has a
+            // fixed 28px height, so the table below never moves for it.
+            .when(self.state.loading, |bar| {
+                bar.child(div().flex_1())
+                    .child(self.render_loading_spinner())
             })
     }
 
@@ -1231,54 +1252,79 @@ impl GridView {
                     )),
             );
 
-        if self.state.sql.is_none() {
-            controls = controls.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(self.grid_icon_button(
-                        "grid-first",
-                        "icons/first.svg",
-                        active,
-                        !at_first,
-                        cx.listener(|this, _event, _window, cx| this.first_page(cx)),
-                    ))
-                    .child(self.grid_icon_button(
-                        "grid-prev",
-                        "icons/prev.svg",
-                        active,
-                        !at_first,
-                        cx.listener(|this, _event, _window, cx| this.prev_page(cx)),
-                    ))
-                    .child(self.render_page_input(cx))
-                    .child(self.grid_icon_button(
-                        "grid-next",
-                        "icons/next.svg",
-                        active,
-                        !at_last,
-                        cx.listener(|this, _event, _window, cx| this.next_page(cx)),
-                    ))
-                    .child(self.grid_icon_button(
-                        "grid-last",
-                        "icons/last.svg",
-                        active,
-                        !at_last,
-                        cx.listener(|this, _event, _window, cx| this.last_page(cx)),
-                    ))
-                    .child(self.grid_icon_button(
-                        "grid-gear",
-                        "icons/gear.svg",
-                        if self.page_size_menu_open {
-                            theme.primary
-                        } else {
-                            muted
-                        },
-                        true,
-                        cx.listener(|this, _event, _window, cx| this.toggle_page_size_menu(cx)),
-                    )),
-            );
+        let pager = self.state.sql.is_none().then(|| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .child(self.grid_icon_button(
+                    "grid-first",
+                    "icons/first.svg",
+                    active,
+                    !at_first,
+                    cx.listener(|this, _event, _window, cx| this.first_page(cx)),
+                ))
+                .child(self.grid_icon_button(
+                    "grid-prev",
+                    "icons/prev.svg",
+                    active,
+                    !at_first,
+                    cx.listener(|this, _event, _window, cx| this.prev_page(cx)),
+                ))
+                .child(self.render_page_input(cx))
+                .child(self.grid_icon_button(
+                    "grid-next",
+                    "icons/next.svg",
+                    active,
+                    !at_last,
+                    cx.listener(|this, _event, _window, cx| this.next_page(cx)),
+                ))
+                .child(self.grid_icon_button(
+                    "grid-last",
+                    "icons/last.svg",
+                    active,
+                    !at_last,
+                    cx.listener(|this, _event, _window, cx| this.last_page(cx)),
+                ))
+                .child(self.grid_icon_button(
+                    "grid-gear",
+                    "icons/gear.svg",
+                    if self.page_size_menu_open {
+                        theme.primary
+                    } else {
+                        muted
+                    },
+                    true,
+                    cx.listener(|this, _event, _window, cx| this.toggle_page_size_menu(cx)),
+                ))
+        });
+        // Navicat's grid shows the last fetch's duration next to the pager; the 耗时 label sits
+        // just left of it so the eye finds the time and the page controls together.
+        let timing = self.state.elapsed.map(|elapsed| {
+            t!(
+                "grid.query_time",
+                seconds = format!("{:.3}", elapsed.as_secs_f64())
+            )
+            .to_string()
+        });
+        if timing.is_some() || pager.is_some() {
+            let mut right = div().flex().flex_row().items_center().gap_2();
+            if let Some(timing) = timing {
+                // A very small font step down, so it reads as a status annotation, not a control.
+                right = right.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(rgb(muted))
+                        .whitespace_nowrap()
+                        .child(timing),
+                );
+            }
+            if let Some(pager) = pager {
+                right = right.child(pager);
+            }
+            controls = controls.child(right);
         }
         controls
     }
@@ -1563,13 +1609,6 @@ impl GridView {
             )
             .to_string(),
         };
-        let timing = self.state.elapsed.map(|elapsed| {
-            t!(
-                "grid.query_time",
-                seconds = format!("{:.3}", elapsed.as_secs_f64())
-            )
-            .to_string()
-        });
         let message: AnyElement = match self.state.selection.as_ref() {
             Some(selection) => {
                 let (start_row, end_row) = selection.rows();
@@ -1639,8 +1678,9 @@ impl GridView {
                     .items_center()
                     .gap_4()
                     .flex_none()
-                    .when_some(timing, |row, timing| {
-                        row.child(div().text_color(rgb(theme.text_muted)).child(timing))
+                    // Grids without a toolbar (SQL results) report the fetch here instead.
+                    .when(self.state.loading && !self.state.show_toolbar, |right| {
+                        right.child(self.render_loading_spinner())
                     })
                     .child(info),
             )

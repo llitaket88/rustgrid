@@ -39,6 +39,11 @@ impl Driver for SqlServerDriver {
         1433
     }
 
+    /// SQL Server's built-in system administrator login.
+    fn default_username(&self) -> &'static str {
+        "sa"
+    }
+
     fn is_file_based(&self) -> bool {
         false
     }

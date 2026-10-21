@@ -541,8 +541,9 @@ impl Render for SqlEditor {
                                 if dy == 0.0 {
                                     return;
                                 }
-                                // The wheel's natural direction: up (negative delta) zooms in.
-                                if zoom(if dy < 0.0 { 1.0 } else { -1.0 }, cx) {
+                                // Scroll up (positive line delta) zooms in, matching the platform
+                                // convention; the previous sign made Ctrl+wheel feel reversed.
+                                if zoom(if dy > 0.0 { 1.0 } else { -1.0 }, cx) {
                                     cx.stop_propagation();
                                 }
                             },

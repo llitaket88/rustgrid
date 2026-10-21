@@ -1102,6 +1102,12 @@ impl AppView {
         if self.queries.get(index).map(|tab| tab.run_generation) != Some(generation) {
             return;
         }
+        let dialect = self
+            .queries
+            .get(index)
+            .and_then(|tab| tab.connection_index)
+            .map(|connection_index| self.driver_dialect(connection_index))
+            .unwrap_or_default();
         let active_id = self.active_grid_id(cx);
 
         // Drop the previous run's grids for this tab.
@@ -1176,6 +1182,7 @@ impl AppView {
                         let state = GridState {
                             id,
                             connection: connection.clone(),
+                            dialect,
                             connection_name: connection_name.clone(),
                             // A query result is not a table, so there is no field layout to key on.
                             connection_id: String::new(),

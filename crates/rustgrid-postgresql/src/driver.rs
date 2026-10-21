@@ -36,6 +36,12 @@ impl Driver for PostgresDriver {
         5432
     }
 
+    /// The account a PostgreSQL cluster creates its first superuser as (the one `initdb` makes,
+    /// and the one the official Docker image uses).
+    fn default_username(&self) -> &'static str {
+        "postgres"
+    }
+
     fn database_editor(&self) -> DatabaseEditorSpec {
         DatabaseEditorSpec {
             // `charset` maps to ENCODING, `collation` to LC_COLLATE, `owner` to OWNER TO.

@@ -376,6 +376,8 @@ pub(crate) struct DetailList {
     h_overflow: Rc<Cell<bool>>,
     v_overflow: Rc<Cell<bool>>,
     content_width: f32,
+    /// The header's height: the vertical scrollbar starts below it.
+    header_height: f32,
     header: Div,
     rows: Div,
 }
@@ -398,9 +400,17 @@ impl DetailList {
             h_overflow: scroll.h_overflow.clone(),
             v_overflow: scroll.v_overflow.clone(),
             content_width,
+            header_height: DETAIL_HEADER_HEIGHT,
             header,
             rows: div().flex().flex_col().min_w(px(content_width)),
         }
+    }
+
+    /// The header height the vertical scrollbar starts below. A list without a header passes
+    /// `0.0` so its track spans the whole viewport.
+    pub(crate) fn header_height(mut self, height: f32) -> Self {
+        self.header_height = height;
+        self
     }
 
     /// Append one row (or the empty-state message) to the list.
@@ -422,6 +432,7 @@ impl DetailList {
             h_overflow,
             v_overflow,
             content_width,
+            header_height,
             header,
             rows,
         } = self;
@@ -500,7 +511,7 @@ impl DetailList {
                 .into_any_element()
         };
         let v_track: AnyElement = if show_v {
-            vscrollbar_element(id, &vscroll, theme, v_begin)
+            vscrollbar_element(id, &vscroll, theme, header_height, v_begin)
         } else {
             div().into_any_element()
         };
@@ -601,6 +612,7 @@ fn vscrollbar_element(
     id: &'static str,
     vscroll: &ScrollHandle,
     theme: Theme,
+    header_height: f32,
     on_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let viewport = f32::from(vscroll.bounds().size.height);
@@ -610,7 +622,7 @@ fn vscrollbar_element(
     div()
         .flex_none()
         .h_full()
-        .pt(px(DETAIL_HEADER_HEIGHT))
+        .pt(px(header_height))
         .pb(px(DETAIL_SCROLLBAR_THICKNESS))
         .child(
             vscrollbar_track(

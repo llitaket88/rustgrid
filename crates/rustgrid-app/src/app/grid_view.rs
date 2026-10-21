@@ -824,8 +824,9 @@ impl Render for GridView {
                 *pane_bounds.borrow_mut() = union;
             }
         });
-        // Surface the load/error state the fetch paths set; without this a slow or failed
-        // refresh looked like nothing happened.
+        // Surface a failed fetch above the table. A running one is a spinner inside the toolbar
+        // (or the status bar when there is none) — never a row of its own, which would push the
+        // rows down and back up on every refresh.
         if let Some(error) = self.state.error.clone() {
             root = root.child(
                 div()
@@ -838,21 +839,14 @@ impl Render for GridView {
                     .text_size(px(12.0))
                     .child(error),
             );
-        } else if self.state.loading {
-            root = root.child(
-                div()
-                    .id("grid-loading")
-                    .flex_none()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(theme.toolbar_bg))
-                    .text_color(rgb(theme.text_muted))
-                    .text_size(px(12.0))
-                    .child(t!("common.loading").to_string()),
-            );
         }
         let wheel_weak = cx.weak_entity();
         let wheel_focus = self.focus.clone();
+        // A grid with no bar to hang the spinner on (the view designer's preview) floats it over
+        // the header's right end instead — still without taking a row from the table.
+        let floating_loading: Option<AnyElement> =
+            (self.state.loading && !self.state.show_toolbar && !self.state.show_footer)
+                .then(|| self.render_loading_spinner().into_any_element());
         root = root.child(
             div()
                 .relative()
@@ -860,6 +854,11 @@ impl Render for GridView {
                 .flex_1()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
+                .children(
+                    floating_loading.map(|spinner| {
+                        div().absolute().top(px(2.0)).right(px(14.0)).child(spinner)
+                    }),
+                )
                 .child(
                     div()
                         .flex()

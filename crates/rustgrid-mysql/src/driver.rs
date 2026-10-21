@@ -52,6 +52,11 @@ impl Driver for MysqlDriver {
         3306
     }
 
+    /// MySQL's conventional administrative account.
+    fn default_username(&self) -> &'static str {
+        "root"
+    }
+
     fn database_editor(&self) -> DatabaseEditorSpec {
         DatabaseEditorSpec {
             charset: true,
@@ -114,6 +119,11 @@ impl Driver for MariaDbDriver {
 
     fn default_port(&self) -> u16 {
         3306
+    }
+
+    /// MariaDB, like MySQL, ships a `root` account.
+    fn default_username(&self) -> &'static str {
+        "root"
     }
 
     fn database_editor(&self) -> DatabaseEditorSpec {
