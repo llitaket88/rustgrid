@@ -20,8 +20,7 @@ use rustgrid_core::{ColumnDef, RowInsert, TableSchema};
 use rustgrid_import::{SheetData, infer_columns};
 
 use super::export::{
-    child_window_titlebar, default_export_dir, export_check_row, export_summary_row, format_hms,
-    now_timestamp,
+    default_export_dir, export_check_row, export_summary_row, format_hms, now_timestamp,
 };
 use super::*;
 
@@ -1155,7 +1154,10 @@ impl AppView {
                     this.import_close(window, cx);
                 }
             }))
-            .child(child_window_titlebar(t!("import.title").to_string(), theme))
+            .child(ui::child_window_titlebar(
+                t!("import.title").to_string(),
+                theme,
+            ))
             .child(heading)
             .child(content)
             .child(self.render_import_footer(cx).into_any_element())

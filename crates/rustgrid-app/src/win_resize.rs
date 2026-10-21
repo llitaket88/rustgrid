@@ -16,7 +16,7 @@ use windows::Win32::{
         WindowsAndMessaging::{
             GetClientRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP,
             HTTOPLEFT, HTTOPRIGHT, IsZoomed, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME,
-            SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync, WM_NCHITTEST,
+            WM_NCHITTEST,
         },
     },
 };
@@ -30,25 +30,6 @@ pub fn install(window: &gpui::Window) {
     };
     unsafe {
         let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
-    }
-}
-
-/// Toggle the window between maximized and restored.
-///
-/// gpui's `Window::zoom_window()` only ever calls `SW_MAXIMIZE` on Windows, which is a no-op on an
-/// already-maximized window, so the titlebar's maximize button would not restore it. Restore the
-/// window ourselves when it is zoomed.
-pub fn toggle_maximize(window: &gpui::Window) {
-    let Some(hwnd) = window_hwnd(window) else {
-        return;
-    };
-    let command = if unsafe { IsZoomed(hwnd) }.as_bool() {
-        SW_RESTORE
-    } else {
-        SW_MAXIMIZE
-    };
-    unsafe {
-        let _ = ShowWindowAsync(hwnd, command);
     }
 }
 

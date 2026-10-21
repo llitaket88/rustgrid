@@ -2983,7 +2983,7 @@ impl AppView {
                     }
                 }
             }))
-            .child(backup_window_titlebar(title, theme))
+            .child(ui::child_window_titlebar(title, theme))
             .child(body);
         if let Some(error) = error {
             root = root.child(backup_error_banner(error, theme));
@@ -4128,88 +4128,6 @@ impl Render for BackupWindow {
 }
 
 // ----- Free helpers ---------------------------------------------------------------------------
-
-/// The child window's titlebar. The OS titlebar is suppressed (`appears_transparent`) so this
-/// chrome matches the app's theme; dragging and the min/max/close controls mirror the main window.
-pub(super) fn backup_window_titlebar(title: String, theme: Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .h(px(30.0))
-        .flex_none()
-        .bg(rgb(theme.titlebar_bg))
-        .border_b_1()
-        .border_color(rgb(theme.border))
-        .child(
-            div()
-                .id("backup-titlebar-drag")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .flex_1()
-                .h_full()
-                // Platform-aware leading inset: macOS draws its window buttons over this corner
-                // (see `ui::titlebar_leading_padding`).
-                .pr_3()
-                .pl(px(ui::titlebar_leading_padding(12.0)))
-                .text_sm()
-                .window_control_area(WindowControlArea::Drag)
-                .child(
-                    img(ImageSource::Resource(Resource::Embedded("logo.png".into())))
-                        .w(px(16.0))
-                        .h(px(16.0))
-                        .flex_none(),
-                )
-                .child(title),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(backup_titlebar_button(
-                    "backup-titlebar-min",
-                    "—",
-                    theme,
-                    |window, _cx| window.minimize_window(),
-                ))
-                .child(backup_titlebar_button(
-                    "backup-titlebar-max",
-                    "□",
-                    theme,
-                    |window, _cx| toggle_maximize(window),
-                ))
-                .child(backup_titlebar_button(
-                    "backup-titlebar-close",
-                    "✕",
-                    theme,
-                    |window, _cx| window.remove_window(),
-                )),
-        )
-}
-
-fn backup_titlebar_button(
-    id: &'static str,
-    label: &'static str,
-    theme: Theme,
-    action: impl Fn(&mut Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(40.0))
-        .h_full()
-        .cursor_pointer()
-        .hover(move |style| style.bg(rgb(theme.button_hover_bg)))
-        .on_click(move |_event, window, cx| action(window, cx))
-        .child(label.to_string())
-}
 
 /// Build the configuration-name field of the New Backup dialog.
 fn make_backup_name_input(

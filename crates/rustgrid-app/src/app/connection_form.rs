@@ -296,73 +296,17 @@ impl AppView {
             .as_ref()
             .and_then(|form| self.registry.get(&form.driver))
         {
+            // TODO green dot ?
+            //    div()
+            // .w(px(9.0))
+            // .h(px(9.0))
+            // .flex_none()
+            // .rounded(px(5.0))
+            // .bg(rgb(0x22c55e)),
             Some(driver) => format!("{action} · {}", driver.display_name()),
             None => action.to_string(),
         };
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(48.0))
-            .flex_none()
-            .pr_4()
-            .bg(rgb(theme.dialog_bg))
-            .border_b_1()
-            .border_color(rgb(theme.border))
-            .child(
-                div()
-                    .id("form-titlebar-drag")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .flex_1()
-                    .h_full()
-                    // Platform-aware leading inset: macOS draws its window buttons over this corner
-                    // (see `ui::titlebar_leading_padding`).
-                    .pl(px(ui::titlebar_leading_padding(16.0)))
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(
-                        div()
-                            .w(px(9.0))
-                            .h(px(9.0))
-                            .flex_none()
-                            .rounded(px(5.0))
-                            .bg(rgb(0x22c55e)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    ),
-            )
-            .child(titlebar_button(
-                "form-titlebar-min",
-                "—",
-                theme,
-                |window, _cx| {
-                    window.minimize_window();
-                },
-            ))
-            .child(titlebar_button(
-                "form-titlebar-max",
-                "□",
-                theme,
-                |window, _cx| {
-                    toggle_maximize(window);
-                },
-            ))
-            .child(titlebar_button(
-                "form-titlebar-close",
-                "✕",
-                theme,
-                |window, _cx| {
-                    window.remove_window();
-                },
-            ))
+        ui::child_window_titlebar(title, theme)
     }
 
     /// The tab bar with a black underline on the active tab. The tabs come from the driver's spec

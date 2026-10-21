@@ -534,7 +534,7 @@ impl AppView {
                     this.export_connections_close(window, cx);
                 }
             }))
-            .child(super::export::child_window_titlebar(
+            .child(ui::child_window_titlebar(
                 t!("connection.export_title").to_string(),
                 theme,
             ))

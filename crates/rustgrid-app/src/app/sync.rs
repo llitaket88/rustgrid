@@ -2151,7 +2151,7 @@ impl AppView {
                     }
                 }
             }))
-            .child(super::backup::backup_window_titlebar(title, theme))
+            .child(ui::child_window_titlebar(title, theme))
             .child(self.render_sync_workbench(cx))
             .child(self.render_sync_footer(cx));
         if self.sync.options_open {

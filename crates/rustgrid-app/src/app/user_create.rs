@@ -3542,7 +3542,7 @@ impl AppView {
                     this.end_create_db_list_drag(cx);
                 }),
             )
-            .child(export::child_window_titlebar(title, theme))
+            .child(ui::child_window_titlebar(title, theme))
             .child(
                 div()
                     .flex()
@@ -3780,7 +3780,7 @@ impl AppView {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(CREATE_NAV_WIDTH))
+            .min_w(px(CREATE_NAV_WIDTH))
             .h_full()
             .py_2()
             .bg(rgb(theme.sidebar_bg))

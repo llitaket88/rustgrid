@@ -403,6 +403,7 @@ impl AppView {
     pub(super) fn titlebar_update_button(
         &self,
         theme: Theme,
+        width: f32,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         // `label` is `None` for the available state: the update affordance is just a compact
@@ -447,11 +448,13 @@ impl AppView {
             .id("titlebar-update")
             .flex()
             .flex_row()
+            .occlude()
             .items_center()
             .justify_center()
             .gap_1()
-            .h(px(26.0))
-            .rounded_full()
+            .min_w(px(width))
+            // .h(px(26.0))
+            // .rounded_full()
             .when(label.is_some(), |style| style.px_2())
             .when(label.is_none(), |style| style.w(px(26.0)))
             .text_size(px(12.0))

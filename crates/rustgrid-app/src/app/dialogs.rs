@@ -349,10 +349,11 @@ impl AppView {
             .any(|tab| tab.connection_index == Some(index) && tab.is_dirty())
     }
 
+    // TODO THIS IS BROKEN!
     /// Ask before closing the main window when there is unsaved work.
-    pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+    pub(super) fn _request_quit(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.has_unsaved_changes(cx) {
-            self.unsaved_confirm = Some(PendingAction::Quit);
+            // self.unsaved_confirm = Some(PendingAction::Quit);
             cx.notify();
             return;
         }
@@ -363,11 +364,11 @@ impl AppView {
     fn run_pending_action(
         &mut self,
         action: PendingAction,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         match action {
-            PendingAction::Quit => window.remove_window(),
+            // PendingAction::Quit => window.remove_window(),
             PendingAction::Disconnect { index } => self.disconnect(index, cx),
             PendingAction::DisconnectMany { indexes } => self.disconnect_many(indexes, cx),
             PendingAction::CloseQuery { index } => self.close_query_now(index, cx),

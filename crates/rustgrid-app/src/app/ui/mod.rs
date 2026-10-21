@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{Disableable, Sizable, Size};
+use gpui_kit::component::{Disableable, Sizable, Size, TitleBar};
 
 use crate::theme::Theme;
 
@@ -33,22 +33,11 @@ pub(super) use views::{
     reveal_vertically, tag_chip, view_mode_toggle,
 };
 
-/// Width macOS reserves at the top-left of a window whose titlebar is drawn by the app: its native
-/// close/minimise/zoom buttons ("traffic lights") are painted over the content view's corner.
-#[cfg(target_os = "macos")]
-const MACOS_WINDOW_BUTTONS_WIDTH: f32 = 78.0;
-
-/// Left padding for the leading region of a custom titlebar, given the inset `base` that titlebar
-/// would use on a platform where the app owns the whole edge.
-///
-/// The OS titlebar is suppressed (`TitlebarOptions::appears_transparent`) so every window draws its
-/// own chrome from the window's top-left corner — but macOS still places its window buttons over
-/// that corner (`MACOS_WINDOW_BUTTONS_WIDTH`). Adding the room they need keeps the app identity
-/// out from under them; elsewhere the result is exactly `base`.
-pub(super) fn titlebar_leading_padding(base: f32) -> f32 {
-    #[cfg(target_os = "macos")]
-    let base = base + MACOS_WINDOW_BUTTONS_WIDTH;
-    base
+/// The child window's titlebar.
+pub(super) fn child_window_titlebar(title: String, theme: Theme) -> impl IntoElement {
+    TitleBar::new()
+        .bg(rgb(theme.titlebar_bg))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
 }
 
 /// The variant of a push button. See `win_button` / `dialog_button`.

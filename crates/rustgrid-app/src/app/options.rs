@@ -496,7 +496,7 @@ impl AppView {
                     this.close_options(window, cx);
                 }
             }))
-            .child(export::child_window_titlebar(
+            .child(ui::child_window_titlebar(
                 t!("options.title").to_string(),
                 theme,
             ))

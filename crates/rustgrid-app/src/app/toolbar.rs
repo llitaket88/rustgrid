@@ -30,31 +30,12 @@ impl AppView {
         let theme = self.theme;
         let anchor = self.theme_menu_anchor.clone();
 
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(32.0))
-            .flex_none()
+        TitleBar::new()
             .bg(rgb(theme.titlebar_bg))
-            .border_b_1()
-            .border_color(rgb(theme.border))
             .child(
                 div()
-                    .id("titlebar-drag")
                     .flex()
-                    .flex_row()
-                    .items_center()
                     .gap_2()
-                    .flex_1()
-                    .h_full()
-                    // The leading inset is platform-aware: on macOS the native window buttons sit
-                    // over this corner of the content view (see `titlebar_leading_padding`).
-                    .pr_3()
-                    .pl(px(ui::titlebar_leading_padding(12.0)))
-                    .text_size(px(12.5))
-                    .window_control_area(WindowControlArea::Drag)
                     .child(
                         img(ImageSource::Resource(Resource::Embedded("logo.png".into())))
                             .w(px(18.0))
@@ -66,56 +47,31 @@ impl AppView {
             .child(
                 div()
                     .flex()
-                    .flex_row()
-                    .items_center()
+                    .gap_1()
                     .h_full()
-                    // The theme button is this row's first child; remember its bounds so the
-                    // dropdown can be anchored under its right edge.
-                    .on_children_prepainted(move |bounds, _window, _cx| {
-                        if let Some(bounds) = bounds.first() {
-                            *anchor.borrow_mut() = Point::new(bounds.left(), bounds.bottom());
-                        }
-                    })
-                    .child(self.titlebar_theme_button(theme, cx))
+                    .child(self.titlebar_update_button(theme, TITLEBAR_ICON_BUTTON, cx))
+                    .child(
+                        div()
+                            .on_children_prepainted(move |bounds, _window, _cx| {
+                                if let Some(bounds) = bounds.first() {
+                                    *anchor.borrow_mut() =
+                                        Point::new(bounds.left(), bounds.bottom());
+                                }
+                            })
+                            .child(self.titlebar_theme_button(theme, cx)),
+                    )
                     .child(titlebar_icon_button(
                         "titlebar-github",
                         "icons/github.svg",
                         theme,
-                        |_event, _window, _cx| open_in_browser(GITHUB_URL),
+                        |_event, _window, cx| cx.open_url(GITHUB_URL),
                     ))
-                    .child(self.titlebar_update_button(theme, cx))
                     .child(titlebar_icon_button(
                         "titlebar-settings",
                         "icons/gear.svg",
                         theme,
                         cx.listener(|this, _event, _window, cx| this.open_options(cx)),
-                    ))
-                    .child(titlebar_button(
-                        "titlebar-min",
-                        "—",
-                        theme,
-                        |window, _cx| {
-                            window.minimize_window();
-                        },
-                    ))
-                    .child(titlebar_button(
-                        "titlebar-max",
-                        "□",
-                        theme,
-                        |window, _cx| {
-                            toggle_maximize(window);
-                        },
-                    ))
-                    .child(titlebar_button("titlebar-close", "✕", theme, {
-                        let weak = cx.weak_entity();
-                        move |window, cx| {
-                            if let Some(app) = weak.upgrade() {
-                                app.update(cx, |app, cx| app.request_quit(window, cx));
-                            } else {
-                                window.remove_window();
-                            }
-                        }
-                    })),
+                    )),
             )
     }
 
@@ -123,6 +79,7 @@ impl AppView {
     fn titlebar_theme_button(&self, theme: Theme, cx: &mut Context<'_, Self>) -> impl IntoElement {
         div()
             .id("titlebar-theme")
+            .occlude()
             .flex()
             .items_center()
             .justify_center()
@@ -703,6 +660,7 @@ fn titlebar_icon_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .occlude()
         .flex()
         .items_center()
         .justify_center()
@@ -719,27 +677,4 @@ fn titlebar_icon_button(
                 .flex_none()
                 .text_color(rgb(theme.text_muted)),
         )
-}
-
-/// Open `url` in the OS default browser.
-pub(super) fn open_in_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("rundll32")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(url)
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
-    {
-        let _ = url;
-    }
 }

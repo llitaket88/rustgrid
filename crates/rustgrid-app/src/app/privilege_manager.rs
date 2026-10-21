@@ -607,7 +607,7 @@ impl Render for PrivilegeManager {
                     window.remove_window();
                 }
             }))
-            .child(export::child_window_titlebar(title, theme))
+            .child(ui::child_window_titlebar(title, theme))
             .child(self.render_subtabs(cx))
             .child(self.render_body(cx))
             .child(self.render_footer(cx));
