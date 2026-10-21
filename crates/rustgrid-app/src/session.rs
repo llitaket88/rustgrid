@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use gpui::ScrollHandle;
 use rustgrid_core::{
-    CellValue, ColumnInfo, Connection, ConnectionProfile, FilterCondition, FilterConjunction,
-    FilterNode, FilterOperator, QueryResult, RoutineDetails, RoutineInfo, RoutineKind, SortColumn,
-    TableInfo, TableStatus, ViewDetails,
+    CellValue, ColumnInfo, Connection, ConnectionProfile, DriverDialect, FilterCondition,
+    FilterConjunction, FilterNode, FilterOperator, QueryResult, RoutineDetails, RoutineInfo,
+    RoutineKind, SortColumn, TableInfo, TableStatus, ViewDetails,
 };
 
 #[derive(Default)]
@@ -788,6 +788,9 @@ fn field_permutation(current_order: &[usize], next_order: &[usize], count: usize
 pub struct GridState {
     pub id: u64,
     pub connection: Arc<dyn Connection>,
+    /// The engine's SQL dialect, for the status line's shown statement (identifier quoting and
+    /// paging syntax), so it reads the engine's own SQL instead of MySQL's.
+    pub dialect: DriverDialect,
     pub connection_name: String,
     /// The connection profile's id, which keys the persisted field layout. Empty for a grid whose
     /// columns are not a table's (a query result), so no field layout is applied to it.
@@ -847,7 +850,8 @@ pub struct GridState {
     pub filter_open: bool,
     /// The panel's working copy of the tree while it is open; applied on `Apply`.
     pub filter_draft: Vec<FilterNode>,
-    /// Wall-clock execution time of the query that produced this grid, when it is a query result.
+    /// Wall-clock execution time of the statement that produced the rows currently on screen
+    /// (a query result, or the table page's `fetch_page`), shown beside the pager.
     pub elapsed: Option<std::time::Duration>,
 }
 
@@ -913,25 +917,132 @@ fn quote_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// Quote a possibly schema-qualified name (`public.users`) part by part, so the display shows
+/// `"public"."users"` rather than one identifier with a dot inside it.
+fn quote_qualified(dialect: DriverDialect, name: &str) -> String {
+    name.split('.')
+        .map(|part| dialect.quote_identifier(part))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The `SELECT` a table page runs, written in `dialect`'s own SQL so the grid's status line is
+/// truthful for every engine: identifiers quoted the engine's way, and paging in the engine's
+/// syntax (MySQL's `LIMIT o,n`, PostgreSQL/SQLite's `LIMIT n OFFSET o`, SQL Server/Oracle's
+/// `OFFSET … FETCH NEXT`).
+///
+/// A schema-qualified engine's table name already carries its schema (`public.users`), and the
+/// database is the connection's context rather than a name prefix (PostgreSQL/Oracle reject a
+/// three-part name). MySQL qualifies with the database and SQLite with nothing, since its
+/// "database" is the file path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn page_display_sql(
+    dialect: DriverDialect,
+    database: &str,
+    table: &str,
+    filters: &[FilterNode],
+    sorts: &[SortColumn],
+    columns: &[ColumnInfo],
+    offset: u64,
+    page_size: u64,
+) -> String {
+    let relation = match dialect {
+        DriverDialect::Mysql => {
+            if database.is_empty() {
+                dialect.quote_identifier(table)
+            } else {
+                format!(
+                    "{}.{}",
+                    dialect.quote_identifier(database),
+                    dialect.quote_identifier(table)
+                )
+            }
+        }
+        DriverDialect::Sqlite => dialect.quote_identifier(table),
+        DriverDialect::SqlServer => {
+            if database.is_empty() {
+                quote_qualified(dialect, table)
+            } else {
+                format!(
+                    "{}.{}",
+                    dialect.quote_identifier(database),
+                    quote_qualified(dialect, table)
+                )
+            }
+        }
+        DriverDialect::Postgres | DriverDialect::Oracle => quote_qualified(dialect, table),
+        DriverDialect::Generic => {
+            if database.is_empty() {
+                dialect.quote_identifier(table)
+            } else {
+                format!(
+                    "{}.{}",
+                    dialect.quote_identifier(database),
+                    dialect.quote_identifier(table)
+                )
+            }
+        }
+    };
+
+    let mut sql = format!("SELECT * FROM {relation}");
+    sql.push_str(&filter_display_clause(filters, dialect));
+
+    let mut order = sorts
+        .iter()
+        .map(|sort| {
+            format!(
+                "{} {}",
+                dialect.quote_identifier(&sort.column),
+                if sort.descending { "DESC" } else { "ASC" }
+            )
+        })
+        .collect::<Vec<_>>();
+    // `OFFSET … FETCH NEXT` is only legal after an `ORDER BY`. With no sort of the user's, the
+    // engine orders by the primary key (both drivers do), and without one SQL Server accepts a
+    // constant ordering while Oracle takes a positional one.
+    if order.is_empty() && dialect.paging_needs_order() {
+        order = columns
+            .iter()
+            .filter(|column| column.primary_key)
+            .map(|column| dialect.quote_identifier(&column.name))
+            .collect();
+        if order.is_empty() {
+            order.push(match dialect {
+                DriverDialect::Oracle => "1".to_string(),
+                _ => "(SELECT NULL)".to_string(),
+            });
+        }
+    }
+    if !order.is_empty() {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(&order.join(", "));
+    }
+
+    sql.push(' ');
+    sql.push_str(&dialect.paging_clause(offset, page_size));
+    sql
+}
+
 /// A human-readable ` WHERE ...` for the status bar. Values are inlined here, unlike the
 /// parameterized query the driver builds.
-fn filter_display_clause(filter: &[FilterNode]) -> String {
-    match filter_display_fragment(filter) {
+fn filter_display_clause(filter: &[FilterNode], dialect: DriverDialect) -> String {
+    match filter_display_fragment(filter, dialect) {
         Some(expr) => format!(" WHERE {expr}"),
         None => String::new(),
     }
 }
 
-fn filter_display_fragment(filter: &[FilterNode]) -> Option<String> {
+fn filter_display_fragment(filter: &[FilterNode], dialect: DriverDialect) -> Option<String> {
     let mut clauses: Vec<String> = Vec::new();
     for node in filter {
         let piece = match node {
-            FilterNode::Condition(condition) => condition_display(condition),
+            FilterNode::Condition(condition) => condition_display(condition, dialect),
             FilterNode::Group(group) => {
                 if !group.enabled {
                     None
                 } else {
-                    filter_display_fragment(&group.children).map(|inner| format!("({inner})"))
+                    filter_display_fragment(&group.children, dialect)
+                        .map(|inner| format!("({inner})"))
                 }
             }
         };
@@ -951,7 +1062,7 @@ fn filter_display_fragment(filter: &[FilterNode]) -> Option<String> {
     (!clauses.is_empty()).then(|| clauses.join(" "))
 }
 
-fn condition_display(condition: &FilterCondition) -> Option<String> {
+fn condition_display(condition: &FilterCondition, dialect: DriverDialect) -> Option<String> {
     if !condition.enabled || condition.column.is_empty() {
         return None;
     }
@@ -962,7 +1073,7 @@ fn condition_display(condition: &FilterCondition) -> Option<String> {
     if operator.needs_second_value() && condition.value2.is_empty() {
         return None;
     }
-    let column = format!("`{}`", condition.column.replace('`', "``"));
+    let column = dialect.quote_identifier(&condition.column);
     let value = quote_literal(&condition.value);
     let piece = match operator {
         FilterOperator::Equal => format!("{column} = {value}"),
@@ -1064,26 +1175,16 @@ impl GridState {
             return sql.clone();
         }
         let offset = self.page_index.saturating_mul(self.page_size);
-        let mut sql = format!("SELECT * FROM `{}`.`{}`", self.database, self.table);
-        sql.push_str(&filter_display_clause(&self.filters));
-        let order = self
-            .sort_columns()
-            .into_iter()
-            .map(|sort| {
-                format!(
-                    "`{}` {}",
-                    sort.column,
-                    if sort.descending { "DESC" } else { "ASC" }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !order.is_empty() {
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&order);
-        }
-        sql.push_str(&format!(" LIMIT {offset},{}", self.page_size));
-        sql
+        page_display_sql(
+            self.dialect,
+            &self.database,
+            &self.table,
+            &self.filters,
+            &self.sort_columns(),
+            &self.all_columns,
+            offset,
+            self.page_size,
+        )
     }
 
     /// The filter tree as an engine-agnostic `WHERE`. Disabled/incomplete nodes are pruned here;
@@ -1291,5 +1392,128 @@ mod tests {
         only.order = only.resolved_order(&single);
         only.invert_visibility();
         assert!(only.hidden.is_empty());
+    }
+
+    /// Each engine's paging statement is shown with its own quoting and paging syntax, so a
+    /// PostgreSQL page no longer reads as MySQL's `LIMIT 0,1000`.
+    #[test]
+    fn the_status_statement_speaks_the_connections_dialect() {
+        let mysql = page_display_sql(
+            DriverDialect::Mysql,
+            "test",
+            "gen_table",
+            &[],
+            &[],
+            &[],
+            0,
+            1000,
+        );
+        assert_eq!(mysql, "SELECT * FROM `test`.`gen_table` LIMIT 0,1000");
+
+        let postgres = page_display_sql(
+            DriverDialect::Postgres,
+            "test",
+            "public.gen_table",
+            &[],
+            &[],
+            &[],
+            0,
+            1000,
+        );
+        assert_eq!(
+            postgres,
+            "SELECT * FROM \"public\".\"gen_table\" LIMIT 1000 OFFSET 0"
+        );
+
+        let sqlite = page_display_sql(
+            DriverDialect::Sqlite,
+            "C:\\data\\app.db",
+            "users",
+            &[],
+            &[],
+            &[],
+            20,
+            10,
+        );
+        assert_eq!(sqlite, "SELECT * FROM `users` LIMIT 10 OFFSET 20");
+
+        let oracle = page_display_sql(
+            DriverDialect::Oracle,
+            "FREEPDB1",
+            "SCOTT.EMP",
+            &[],
+            &[],
+            &[],
+            0,
+            100,
+        );
+        assert_eq!(
+            oracle,
+            "SELECT * FROM \"SCOTT\".\"EMP\" ORDER BY 1 OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY"
+        );
+    }
+
+    /// SQL Server's `OFFSET … FETCH NEXT` needs an `ORDER BY`; the display orders by the primary
+    /// key when the table has one (as the driver does) and falls back to a constant order.
+    #[test]
+    fn a_sql_server_page_orders_before_fetching() {
+        let mut keyed = columns(&["id", "name"]);
+        keyed[0].primary_key = true;
+        assert_eq!(
+            page_display_sql(
+                DriverDialect::SqlServer,
+                "app",
+                "dbo.users",
+                &[],
+                &[],
+                &keyed,
+                40,
+                20,
+            ),
+            "SELECT * FROM [app].[dbo].[users] ORDER BY [id] OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY"
+        );
+        assert_eq!(
+            page_display_sql(
+                DriverDialect::SqlServer,
+                "app",
+                "dbo.logs",
+                &[],
+                &[],
+                &columns(&["message"]),
+                0,
+                20,
+            ),
+            "SELECT * FROM [app].[dbo].[logs] ORDER BY (SELECT NULL) \
+             OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY"
+        );
+    }
+
+    /// The shown `WHERE` quotes its columns the engine's way and keeps the applied sort order.
+    #[test]
+    fn the_status_statement_quotes_filters_and_sorts_per_dialect() {
+        let filter = vec![FilterNode::Condition(FilterCondition {
+            column: "name".to_string(),
+            operator: FilterOperator::Equal,
+            value: "ann".to_string(),
+            ..FilterCondition::default()
+        })];
+        let sorts = vec![SortColumn {
+            column: "id".to_string(),
+            descending: true,
+        }];
+        assert_eq!(
+            page_display_sql(
+                DriverDialect::SqlServer,
+                "app",
+                "dbo.users",
+                &filter,
+                &sorts,
+                &columns(&["id", "name"]),
+                0,
+                20,
+            ),
+            "SELECT * FROM [app].[dbo].[users] WHERE [name] = 'ann' ORDER BY [id] DESC \
+             OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY"
+        );
     }
 }

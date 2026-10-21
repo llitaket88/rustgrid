@@ -9,14 +9,36 @@ All notable changes to RustGrid are documented in this file. The format is based
 UI labels are quoted as the app shows them, so this file quotes the English strings;
 [`CHANGELOG_zh.md`](CHANGELOG_zh.md) quotes the 简体中文 ones.
 
+## [0.1.0] - 2026-10-21
+
+### Added
+
+- The Sync main tab (after Backup): compare a source database with a target — across engines too —
+  and apply structure, data, both or a full copy, with per-table status, the row-level diff, a SQL
+  preview, a run log and saved configurations.
+- The table designer adds PostgreSQL's exclusion constraints and rewrite rules, triggers, and
+  MySQL/MariaDB partitioning, and edits PostgreSQL identity columns (generation, start, increment).
+- The designer suggests the common defaults that suit the selected column's type, and its field grid
+  moves like the table grid (arrows, Tab, Enter/F2).
+- Empty and Truncate act on every selected table at once.
+
+### Fixed
+
+- PostgreSQL: query results show their result sets again
+  ([#12](https://github.com/yisier/rustgrid/issues/12)) and the table designer completes
+  ([#15](https://github.com/yisier/rustgrid/issues/15)).
+- PostgreSQL: ORDER BY keeps the column's native type instead of sorting numbers and dates as text.
+- Search and filter placeholders follow a UI language change
+  ([#19](https://github.com/yisier/rustgrid/issues/19)).
+- Loading a grid page no longer pushes the rows down and back up.
+- A menu opened from the pointer appears under it, the connection tree's group rename field accepts
+  typing again, and the object list repaints as soon as the theme changes.
+- Long labels wrap in the Options window and the sync options popup.
+
 ## [0.0.15] - 2026-10-19
 
 ### Added
 
-- The Transfer main tab (after Backup): compare a source database with a target and apply the
-  difference — structure, data, both, or a full transfer — with per-table status and a run log.
-- The Transfer tab lists saved transfer configurations; New Transfer opens a child window where a
-  configuration is named, saved and run.
 - The detail lists sort: click a column header to order by it, click again to reverse — on Tables,
   Views, Functions, Users, Backup and the saved queries.
 - Options → Editor: "Ctrl + mouse wheel resizes the font", on by default — hold Ctrl and scroll over
@@ -32,8 +54,6 @@ UI labels are quoted as the app shows them, so this file quotes the English stri
   each list keeps its own text — a table search no longer filters views, functions or queries.
 - The Editor settings (font, size, Show Line Numbers, Word Wrap) reach the editors that are already
   open, instead of only the tabs opened afterwards.
-- The Transfer window never picks a target on its own, the active mode is clearly highlighted, and
-  the source/target pickers have room for their full width.
 
 ## [0.0.14] - 2026-10-18
 

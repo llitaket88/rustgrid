@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 
 const CURRENT_VERSION: u32 = 2;
 const PROFILES_FILE: &str = "connections.json";
-const SETTINGS_VERSION: u32 = 14;
+const SETTINGS_VERSION: u32 = 15;
 const SETTINGS_FILE: &str = "settings.json";
+/// The settings version that introduced 保留对象搜索 as a deliberate choice. Files written before
+/// it kept the old `false` default, so loading turns the switch on once; a file that version or
+/// newer carries whatever the user chose.
+const PRESERVE_OBJECT_SEARCH_SINCE: u32 = 14;
 const QUERIES_VERSION: u32 = 1;
 const QUERIES_FILE: &str = "queries.json";
 const QUERIES_DIR: &str = "queries";
@@ -262,6 +266,9 @@ struct SettingsFile {
     /// Whether the grid header shows each column's data type between its name and comment.
     #[serde(default)]
     grid_show_types: bool,
+    /// Hide the transfer table rows whose comparison found no difference (on by default).
+    #[serde(default = "default_true")]
+    sync_hide_same: bool,
     /// The user's keymap overrides: command id -> keystrokes (gpui keystroke strings). Only
     /// commands the user changed are stored; an empty list unbinds the command.
     #[serde(default)]
@@ -376,6 +383,8 @@ pub struct AppSettings {
     pub grid_show_comments: bool,
     /// Whether the grid header shows each column's data type between its name and comment.
     pub grid_show_types: bool,
+    /// Hide the transfer table rows whose comparison found no difference.
+    pub sync_hide_same: bool,
     /// The keymap overrides edited on the Options window's 快捷键 page: command id -> gpui
     /// keystroke strings (`"secondary-r"`). Commands not listed keep their built-in keystrokes;
     /// an empty list unbinds the command.
@@ -411,6 +420,7 @@ impl Default for AppSettings {
             grid_field_layouts: BTreeMap::new(),
             grid_show_comments: false,
             grid_show_types: false,
+            sync_hide_same: true,
             shortcuts: BTreeMap::new(),
             preserve_object_search: true,
             restore_session: true,
@@ -652,15 +662,14 @@ impl ConfigStore {
             grid_field_layouts: file.grid_field_layouts,
             grid_show_comments: file.grid_show_comments,
             grid_show_types: file.grid_show_types,
+            sync_hide_same: file.sync_hide_same,
             shortcuts: fold_legacy_shortcuts(
                 file.shortcuts,
                 file.run_shortcut,
                 file.run_selected_shortcut,
             ),
-            // 保留对象搜索 is on by default now; a file written by an older version kept the old
-            // default (`false`) from before it was a choice worth making, so upgrading turns it on
-            // once. A file this version wrote carries whatever the user chose.
-            preserve_object_search: file.preserve_object_search || file.version < SETTINGS_VERSION,
+            preserve_object_search: file.preserve_object_search
+                || file.version < PRESERVE_OBJECT_SEARCH_SINCE,
             restore_session: file.restore_session,
             max_statements_per_run: file.max_statements_per_run,
             stop_on_error: file.stop_on_error,
@@ -687,6 +696,7 @@ impl ConfigStore {
             grid_field_layouts: settings.grid_field_layouts.clone(),
             grid_show_comments: settings.grid_show_comments,
             grid_show_types: settings.grid_show_types,
+            sync_hide_same: settings.sync_hide_same,
             shortcuts: settings.shortcuts.clone(),
             preserve_object_search: settings.preserve_object_search,
             restore_session: settings.restore_session,
@@ -928,17 +938,29 @@ mod tests {
         // setting on, because "保留对象搜索" is on by default now.
         let old = r#"{ "version": 13, "preserve_object_search": false }"#;
         let file: SettingsFile = serde_json::from_str(old).expect("parse v13");
-        assert!(file.preserve_object_search || file.version < SETTINGS_VERSION);
+        assert!(file.preserve_object_search || file.version < PRESERVE_OBJECT_SEARCH_SINCE);
         assert!(file.restore_session, "启动时恢复 defaults to on");
         assert!(
             file.editor_ctrl_wheel_zoom,
             "Ctrl + wheel zoom defaults to on"
         );
 
-        // A file this version wrote keeps the user's choice.
-        let current =
-            format!(r#"{{ "version": {SETTINGS_VERSION}, "preserve_object_search": false }}"#);
-        let file: SettingsFile = serde_json::from_str(&current).expect("parse current");
-        assert!(!(file.preserve_object_search || file.version < SETTINGS_VERSION));
+        // A file written once the switch became a deliberate choice keeps the user's decision.
+        let chosen = format!(
+            r#"{{ "version": {PRESERVE_OBJECT_SEARCH_SINCE}, "preserve_object_search": false }}"#
+        );
+        let file: SettingsFile = serde_json::from_str(&chosen).expect("parse v14");
+        assert!(!(file.preserve_object_search || file.version < PRESERVE_OBJECT_SEARCH_SINCE));
+    }
+
+    #[test]
+    fn sync_hide_same_defaults_on_and_keeps_a_saved_choice() {
+        let older: SettingsFile = serde_json::from_str(r#"{ "version": 14 }"#).expect("parse v14");
+        assert!(older.sync_hide_same, "隐藏一致 defaults to on");
+
+        let chosen: SettingsFile =
+            serde_json::from_str(r#"{ "version": 15, "sync_hide_same": false }"#)
+                .expect("parse v15");
+        assert!(!chosen.sync_hide_same);
     }
 }

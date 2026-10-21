@@ -147,6 +147,21 @@ async fn round_trips_a_live_sql_server() {
         )
         .await
         .unwrap();
+    // A transferred row carries an explicit identity value; `insert_rows` must wrap it in
+    // `SET IDENTITY_INSERT` when (and only when) the batch names the identity column.
+    connection
+        .insert_rows(
+            &database,
+            table,
+            &[RowInsert {
+                values: vec![
+                    ("id".to_string(), Some("100".to_string())),
+                    ("name".to_string(), Some("zoe".to_string())),
+                ],
+            }],
+        )
+        .await
+        .unwrap();
     connection
         .delete_rows(
             &database,
@@ -160,7 +175,8 @@ async fn round_trips_a_live_sql_server() {
         .fetch_page(&database, table, PageRequest::new(0, 10))
         .await
         .unwrap();
-    assert_eq!(page.total_rows, Some(2));
+    assert_eq!(page.total_rows, Some(3));
+    assert!(page.rows.iter().any(|row| row[0].as_display() == "100"));
 
     // Multi-statement script: one result per statement.
     let results = connection
@@ -194,14 +210,14 @@ async fn round_trips_a_live_sql_server() {
             .await
             .unwrap()
     };
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
     dump.rows = collected;
     connection.restore_object(&database, &dump).await.unwrap();
     let page = connection
         .fetch_page(&database, table, PageRequest::new(0, 10))
         .await
         .unwrap();
-    assert_eq!(page.total_rows, Some(2));
+    assert_eq!(page.total_rows, Some(3));
 
     // Views.
     let view = "rustgrid_live_adults";

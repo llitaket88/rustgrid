@@ -1429,6 +1429,9 @@ impl ObjectPane {
                     });
                     cx.notify();
                 });
+                // The blank-area menu on the ObjectPane container is a fallback; a row's own
+                // menu must win.
+                cx.stop_propagation();
                 cx.notify();
             }),
         )
@@ -1614,6 +1617,9 @@ impl ObjectPane {
                     });
                     cx.notify();
                 });
+                // The blank-area menu on the ObjectPane container is a fallback; a row's own
+                // menu must win.
+                cx.stop_propagation();
                 cx.notify();
             }),
         )
@@ -1780,6 +1786,9 @@ impl ObjectPane {
                     });
                     cx.notify();
                 });
+                // The blank-area menu on the ObjectPane container is a fallback; a row's own
+                // menu must win.
+                cx.stop_propagation();
                 cx.notify();
             }),
         )
@@ -1941,6 +1950,9 @@ impl ObjectPane {
                     });
                     cx.notify();
                 });
+                // The blank-area menu on the ObjectPane container is a fallback; a row's own
+                // menu must win.
+                cx.stop_propagation();
                 cx.notify();
             }),
         )
@@ -2018,7 +2030,8 @@ impl ObjectPane {
         else {
             return;
         };
-        cx.stop_propagation();
+        // The list only reads the key to move its highlight; claiming it would stop the platform
+        // from delivering the character to the in-place rename editor drawn inside this pane.
         let now = std::time::Instant::now();
         if self
             .typeahead_at
@@ -2440,6 +2453,37 @@ impl Render for ObjectPane {
                                 event.modifiers,
                                 cx,
                             );
+                        });
+                    }
+                }),
+            )
+            // Right-clicking the blank area of the object list offers the same category menu as
+            // the connection tree's category node: new table / import / export / refresh for
+            // 表, or refresh for the other categories.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.commit_pending_rename(cx);
+                    window.focus(&this.focus, cx);
+                    let target = match this.category {
+                        Category::Tables => ContextTarget::TableCategory {
+                            connection_index: this.connection_index,
+                            database_index: this.database_index,
+                            schema: this.schema.clone(),
+                        },
+                        category => ContextTarget::ObjectCategory {
+                            connection_index: this.connection_index,
+                            database_index: this.database_index,
+                            category,
+                        },
+                    };
+                    if let Some(app) = this.app.upgrade() {
+                        app.update(cx, |app, cx| {
+                            app.context_menu = Some(ContextMenu {
+                                target,
+                                position: event.position,
+                            });
+                            cx.notify();
                         });
                     }
                 }),

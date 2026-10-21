@@ -415,6 +415,9 @@ pub struct PageRequest {
     pub order_by: Vec<SortColumn>,
     /// Applied `WHERE`, as a tree of conditions and groups. Empty means no filtering.
     pub filter: Vec<FilterNode>,
+    /// A streaming walk that only needs the rows can skip the engine's `COUNT(*)`. The default
+    /// keeps the total available for the grid's status bar.
+    pub skip_total: bool,
 }
 
 impl PageRequest {
@@ -424,11 +427,18 @@ impl PageRequest {
             page_size: page_size.max(1),
             order_by: Vec::new(),
             filter: Vec::new(),
+            skip_total: false,
         }
     }
 
     pub fn with_order_by(mut self, order_by: Vec<SortColumn>) -> Self {
         self.order_by = order_by;
+        self
+    }
+
+    /// Skip the `COUNT(*)` a normal page uses for its status line.
+    pub fn with_skip_total(mut self, skip_total: bool) -> Self {
+        self.skip_total = skip_total;
         self
     }
 

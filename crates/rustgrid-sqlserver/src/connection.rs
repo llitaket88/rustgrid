@@ -116,6 +116,30 @@ impl SqlServerConnection {
             .unwrap_or_else(|| DEFAULT_SCHEMA.to_string()))
     }
 
+    /// The table's `IDENTITY` column name, when it has one. Needed both by restore (to wrap
+    /// `IDENTITY_INSERT`) and by inserts that explicitly carry the identity value.
+    pub(crate) async fn identity_column(
+        &self,
+        database: &str,
+        schema: &str,
+        table: &str,
+    ) -> Result<Option<String>> {
+        let sql = format!(
+            "SELECT TOP 1 c.name FROM {db}.sys.columns c \
+             JOIN {db}.sys.objects o ON o.object_id = c.object_id \
+             JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id \
+             WHERE o.name = @P1 AND s.name = @P2 AND c.is_identity = 1",
+            db = quote_identifier(database)
+        );
+        self.scalar_text(
+            None,
+            &sql,
+            &[Some(table.to_string()), Some(schema.to_string())],
+        )
+        .await
+        .map(|value| value.filter(|value| !value.is_empty()))
+    }
+
     /// Whether a table has an `IDENTITY` column, needed for `IDENTITY_INSERT` on restore.
     pub(crate) async fn has_identity(
         &self,
@@ -442,8 +466,10 @@ impl Connection for SqlServerConnection {
         let (where_clause, filter_values) = filter_clause(&page.filter);
         let filter_params: Vec<Option<String>> = filter_values.into_iter().map(Some).collect();
 
-        let total_rows = self
-            .scalar_text(
+        let total_rows = if page.skip_total {
+            None
+        } else {
+            self.scalar_text(
                 None,
                 &format!("SELECT COUNT(*) FROM {qualified}{where_clause}"),
                 &filter_params,
@@ -451,7 +477,8 @@ impl Connection for SqlServerConnection {
             .await
             .ok()
             .flatten()
-            .and_then(|value| value.parse::<u64>().ok());
+            .and_then(|value| value.parse::<u64>().ok())
+        };
 
         let order = if page.order_by.is_empty() {
             let primary_keys: Vec<String> = columns
@@ -525,31 +552,56 @@ impl Connection for SqlServerConnection {
         let mut client = self.acquire().await?;
         use_database(&mut client, database).await?;
 
-        for insert in rows {
-            if insert.values.is_empty() {
-                let sql = format!("INSERT INTO {qualified} DEFAULT VALUES");
-                run_statement(&mut client, &sql, &[]).await?;
-                continue;
-            }
-            let columns = insert
-                .values
-                .iter()
-                .map(|(column, _)| quote_identifier(column))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let placeholders = (1..=insert.values.len())
-                .map(|index| format!("@P{index}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let params: Vec<Option<String>> = insert
-                .values
-                .iter()
-                .map(|(_, value)| value.clone())
-                .collect();
-            let sql = format!("INSERT INTO {qualified} ({columns}) VALUES ({placeholders})");
-            run_statement(&mut client, &sql, &params).await?;
+        // A transferred row carries the source's identity value. SQL Server rejects an explicit
+        // value unless `IDENTITY_INSERT` is on, but turning it on also *requires* every insert to
+        // name the identity column, so only do it when this batch actually carries that column.
+        // The plain batch form is required because a `SET` sent through `sp_executesql` only
+        // lives inside that nested batch.
+        let identity_column = self.identity_column(database, &schema, &bare).await?;
+        let writes_identity = identity_column.as_ref().is_some_and(|identity| {
+            rows.iter().any(|insert| {
+                insert
+                    .values
+                    .iter()
+                    .any(|(column, _)| column.eq_ignore_ascii_case(identity))
+            })
+        });
+        if writes_identity {
+            run_plain_batch(&mut client, &format!("SET IDENTITY_INSERT {qualified} ON")).await?;
         }
-        Ok(())
+        let outcome: Result<()> = async {
+            for insert in rows {
+                if insert.values.is_empty() {
+                    let sql = format!("INSERT INTO {qualified} DEFAULT VALUES");
+                    run_statement(&mut client, &sql, &[]).await?;
+                    continue;
+                }
+                let columns = insert
+                    .values
+                    .iter()
+                    .map(|(column, _)| quote_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let placeholders = (1..=insert.values.len())
+                    .map(|index| format!("@P{index}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let params: Vec<Option<String>> = insert
+                    .values
+                    .iter()
+                    .map(|(_, value)| value.clone())
+                    .collect();
+                let sql = format!("INSERT INTO {qualified} ({columns}) VALUES ({placeholders})");
+                run_statement(&mut client, &sql, &params).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if writes_identity {
+            let _ =
+                run_plain_batch(&mut client, &format!("SET IDENTITY_INSERT {qualified} OFF")).await;
+        }
+        outcome
     }
 
     async fn delete_rows(
@@ -3107,6 +3159,41 @@ pub(crate) fn privilege_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creates_a_table_mapped_from_mysql() {
+        use rustgrid_core::{ColumnDef, DriverDialect, TableSchema, map_schema};
+
+        let source = TableSchema {
+            columns: vec![
+                ColumnDef {
+                    name: "id".to_string(),
+                    data_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    auto_increment: true,
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "name".to_string(),
+                    data_type: "varchar".to_string(),
+                    length: "255".to_string(),
+                    ..Default::default()
+                },
+                ColumnDef {
+                    name: "payload".to_string(),
+                    data_type: "longblob".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mapped = map_schema(&source, DriverDialect::Mysql, DriverDialect::SqlServer);
+        let sql = table_schema_sql("dbo", "users", None, &mapped);
+        assert!(sql.contains("[id] bigint IDENTITY(1,1)"), "{sql}");
+        assert!(sql.contains("[name] nvarchar(255)"), "{sql}");
+        assert!(sql.contains("[payload] varbinary(max)"), "{sql}");
+    }
 
     #[test]
     fn renders_column_types_with_their_qualifiers() {

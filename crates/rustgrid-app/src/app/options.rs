@@ -1103,6 +1103,10 @@ impl AppView {
                     )
                     .child(
                         div()
+                            // The hint takes a line of its own, so it wraps inside the dialog
+                            // instead of running past its edge.
+                            .w_full()
+                            .min_w(px(0.0))
                             .text_size(px(11.5))
                             .text_color(rgb(self.theme.text_muted))
                             .child(t!("options.general.max_statements_hint").to_string()),

@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*,
-    px, rgb,
+    px, rgb, svg,
 };
 use gpui_kit::component::Icon;
 use gpui_kit::component::combobox::{Combobox, ComboboxEvent, ComboboxState};
@@ -30,6 +30,8 @@ pub(crate) type ComboSelectCallback = Rc<dyn Fn(&str, &mut Window, &mut App) + '
 pub(crate) struct ComboOption {
     pub value: String,
     pub label: String,
+    /// An optional leading glyph (an engine mark for a connection, a database for a schema, ...).
+    icon: Option<(&'static str, u32)>,
 }
 
 impl ComboOption {
@@ -37,6 +39,7 @@ impl ComboOption {
         Self {
             value: value.into(),
             label: label.into(),
+            icon: None,
         }
     }
 
@@ -46,7 +49,15 @@ impl ComboOption {
         Self {
             label: value.clone(),
             value,
+            icon: None,
         }
+    }
+
+    /// Draw `icon` (tinted with `color`) before the label in both the dropdown row and — via
+    /// [`ComboBox::set_icon`] — the trigger when the caller wants that.
+    pub(crate) fn with_icon(mut self, icon: &'static str, color: u32) -> Self {
+        self.icon = Some((icon, color));
+        self
     }
 }
 
@@ -59,6 +70,27 @@ impl SearchableListItem for ComboOption {
 
     fn value(&self) -> &Self::Value {
         &self.value
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let Some((icon, color)) = self.icon else {
+            return self.title().into_any_element();
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                svg()
+                    .path(icon)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .flex_none()
+                    .text_color(rgb(color)),
+            )
+            .child(SharedString::from(self.label.clone()))
+            .into_any_element()
     }
 }
 

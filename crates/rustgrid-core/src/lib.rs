@@ -5,6 +5,7 @@ pub mod driver;
 pub mod error;
 pub mod model;
 pub mod options;
+pub mod portable;
 pub mod registry;
 pub mod routine;
 pub mod split;
@@ -34,11 +35,13 @@ pub use model::{
     TableOptions, TablePage, TableSchema, TableStatus, TransferMode, TriggerDef, UniqueKeyDef,
 };
 pub use options::{ConnectionOptions, TlsMode, TlsOptions, TunnelAuth, TunnelKind, TunnelLayer};
+pub use portable::{LogicalType, map_schema, map_table_name};
 pub use registry::{BuiltinDriverSource, DriverRegistry, DriverSource};
 pub use routine::{RoutineDetails, RoutineEdit, RoutineInfo, RoutineKind};
 pub use sync::{
     CellChange, DataDiff, RowChange, RowChangeKind, SchemaChange, SchemaChangeKind,
-    column_type_text, diff_columns, diff_rows, render_change_sql, render_literal,
+    column_type_text, delete_row_change, diff_columns, diff_rows, diff_schema, insert_row_change,
+    render_change_sql, render_literal, update_row_change, usable_key_columns,
 };
 pub use user::{
     AccountKind, DefaultObjectType, DefaultPrivilege, DefaultPrivilegeInfo, ObjectGrant,

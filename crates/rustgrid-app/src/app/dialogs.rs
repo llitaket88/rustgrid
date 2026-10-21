@@ -1048,6 +1048,28 @@ impl AppView {
                     t!("object.drop_tables_button", count = count).to_string(),
                 )
             }
+            Some(DeleteConfirm::TablesOperation {
+                names, operation, ..
+            }) => {
+                let count = names.len();
+                let (title, message, button) = match operation {
+                    TableOperation::Empty => (
+                        "object.empty_table",
+                        "object.empty_tables_confirm",
+                        "object.empty_tables_button",
+                    ),
+                    TableOperation::Truncate => (
+                        "object.truncate_table",
+                        "object.truncate_tables_confirm",
+                        "object.truncate_tables_button",
+                    ),
+                };
+                (
+                    t!(title).to_string(),
+                    t!(message, count = count).to_string(),
+                    t!(button, count = count).to_string(),
+                )
+            }
             Some(DeleteConfirm::SavedQuery { index }) => {
                 let name = self
                     .query_files

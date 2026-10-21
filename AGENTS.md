@@ -263,7 +263,9 @@ touching UI code.
   under the field it controls. The 常规 page does **not** repeat the engine in a read-only box — the
   window title (`新建/编辑连接 · <engine>`) already names it. The generic ODBC driver is the one that
   keeps the plain form (`home: Odbc`) and declares no TLS/tunnel/advanced pages (it reads none of
-  them).
+  them). The username a fresh form starts with is the engine's own
+  (`Driver::default_username`: `root`, `postgres`, `sa`; empty where there is no conventional
+  account), never one engine's account shown for another.
 - **Per-engine table design.** `DriverDescriptor::table_designer` (`TableDesignerSpec`) is the whole
   designer spec, read from the driver through the registry (`AppView::table_designer`) — never by
   matching on an engine id. `tabs` lists the sub-tabs (`DesignerTab`) in order, `column_options` the
@@ -454,6 +456,15 @@ touching UI code.
   `absolute` + `.occlude()` + the dialog face/border/shadow, so scrolling inside a popup never
   scrolls the view underneath. Never hand-roll a `div().absolute()` popup; build it on
   `popup_panel`. gpui-kit's own `Combobox`/`Select`/`Popover` already occlude, so they are fine.
+- **A menu that opens at the pointer is positioned by gpui's `anchored`, never by a guessed
+  height.** `render_context_menu` / `render_tab_menu` wrap their `popup_panel` in
+  `anchored().position(pointer).anchor(Anchor::TopLeft)` and leave `left`/`top` to it (the wrapped
+  panel is `.relative()` inside it). `anchored` measures the menu after layout and, when it would
+  overflow, switches its anchor corner — growing up/left from the pointer — falling back to snapping
+  it to the window edge. A fixed height estimate used to clamp a menu opened on the last row far
+  above the click, so the menu floated in the middle of the pane instead of under the row. The
+  flyouts' `left(relative(1.0))` still resolves against the panel (it is the nearest positioned
+  ancestor), so their placement is unaffected.
 - **A hover-opened submenu flyout closes through a two-rectangle zone, not through its trigger
   row's hover alone.** The menu's flyouts (颜色, 管理分组, 转储 SQL 文件, 导入连接) open while the
   pointer is on their row, but a flyout built on `popup_panel` occludes the row behind it, so the
@@ -809,6 +820,15 @@ make more engines cheap later — do not build those features early.
   divider on its right edge (so it does not read as a scrollbar) drags a manual width (min 520,
   max 700) and double-clicking it restores auto-fit (`filter_resize_drag`).
 
+- **A key-down listener must never claim a printable keystroke to "use" its character.** On
+  Windows `WM_GPUI_KEYDOWN` runs `TranslateMessage` only while the event propagates, so calling
+  `cx.stop_propagation()` for a letter/digit/symbol suppresses the `WM_CHAR` that would type it.
+  Type-ahead handlers that only move a list's highlight (the connection tree's
+  `sidebar::nav_typeahead`, the object list's `ObjectPane::object_key`) therefore leave the event
+  propagating, and skip working at all while an in-place rename editor is open inside them —
+  `stop_propagation` there silently made the group rename editor untypable in every non-IME input
+  mode. A claimed character is fine only where the handler itself inserts text.
+
 - **An empty grid still shows an empty table.** With no rows to paint, `GridView::render` swaps the
   `uniform_list` for a decorative body (`grid_view.rs::empty_grid_rows`): the gutter plus one bordered
   cell per column, repeated with the same alternating bands, tall enough to fill the body area, so
@@ -816,6 +836,14 @@ make more engines cheap later — do not build those features early.
   `empty_grid_height`, measured from the body's flex-sized child each frame (`on_children_prepainted`)
   — never from the filler's own height, which would feed back and grow. The filler carries no
   hitboxes, so nothing in it is selectable; a click just focuses the grid.
+
+- **A running fetch is a spinner inside a bar the grid already draws, never a bar of its own.** The
+  old `加载中...` strip was a `flex_none` child of the grid root, so every page load pushed the rows
+  down and back up. `GridView::render_loading_spinner` is now appended to the grid toolbar's far end
+  (`render_grid_toolbar`, right-aligned by a `flex_1` spacer) and, for grids without a toolbar (SQL
+  results), to the status bar's right group next to the page info; a grid with neither (the view
+  designer's preview) floats it over the header's right end with `absolute`. Do not put it back in
+  the flex column — the pane must not reflow for a fetch.
 
 - **Read-only text the user must copy is selectable, but `SelectableText` alone does not copy.**
   `gpui_kit::base::SelectableText` participates in the window's selection — a mouse drag selects —

@@ -421,14 +421,17 @@ impl Connection for OracleConnection {
         let qualified = qualify(&schema, &bare);
         let (where_clause, binds) = filter_clause(&page.filter, &columns);
 
-        let total_rows = self
-            .scalar_i64(
+        let total_rows = if page.skip_total {
+            None
+        } else {
+            self.scalar_i64(
                 &format!("SELECT count(*) FROM {qualified}{where_clause}"),
                 binds.clone(),
             )
             .await
             .ok()
-            .map(|value| value.max(0) as u64);
+            .map(|value| value.max(0) as u64)
+        };
 
         let page_size = page.page_size.max(1);
         let offset = page.offset();

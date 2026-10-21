@@ -48,6 +48,26 @@ impl DriverDialect {
         quoted
     }
 
+    /// Whether `LIMIT`/`OFFSET` + `FETCH` pagination needs an `ORDER BY`: SQL Server and Oracle
+    /// reject `OFFSET … FETCH NEXT` without one, while MySQL/SQLite/PostgreSQL page without it.
+    pub fn paging_needs_order(self) -> bool {
+        matches!(self, DriverDialect::SqlServer | DriverDialect::Oracle)
+    }
+
+    /// The paging clause a page of `limit` rows starting at `offset` uses, in this dialect's own
+    /// syntax. Used by the grid's status line, so it matches the statement the driver ran.
+    pub fn paging_clause(self, offset: u64, limit: u64) -> String {
+        match self {
+            DriverDialect::Mysql => format!("LIMIT {offset},{limit}"),
+            DriverDialect::SqlServer | DriverDialect::Oracle => {
+                format!("OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
+            }
+            DriverDialect::Sqlite | DriverDialect::Postgres | DriverDialect::Generic => {
+                format!("LIMIT {limit} OFFSET {offset}")
+            }
+        }
+    }
+
     /// The built-in function names completion offers for this dialect. Kept static so the editor
     /// can offer them without a database round-trip; engines without a curated list contribute
     /// theirs as they are added (their stored functions are still offered).

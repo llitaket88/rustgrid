@@ -86,6 +86,17 @@ impl GridView {
         cx.notify();
     }
 
+    /// Re-translate the popup's search placeholder after a language change. The field is built
+    /// once with the grid (like the shared search boxes in `AppView`), so the new text has to be
+    /// pushed into it; otherwise reopening the popup after switching language still shows the
+    /// previous one.
+    pub(super) fn sync_search_placeholder(&mut self, cx: &mut Context<'_, Self>) {
+        let input = self.field_filter_search_input.clone();
+        input.update(cx, |input, cx| {
+            input.set_placeholder(t!("grid.field_filter_search").to_string(), cx);
+        });
+    }
+
     /// Dismiss the popup, discarding its draft (the applied layout keeps whatever 确定 last set).
     pub(super) fn close_field_filter(&mut self, cx: &mut Context<'_, Self>) {
         self.field_filter_open = false;

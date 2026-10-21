@@ -7,15 +7,15 @@ use std::time::Duration;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, DispatchPhase, Div,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight, HighlightStyle,
-    ImageSource, KeyBinding, KeyDownEvent, Keystroke, ListHorizontalSizingBehavior, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Resource,
-    ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
+    Anchor, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
+    DispatchPhase, Div, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight,
+    HighlightStyle, ImageSource, KeyBinding, KeyDownEvent, Keystroke, ListHorizontalSizingBehavior,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+    Resource, ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
     StyledText, Subscription, Svg, TextLayout, TitlebarOptions, UTF16Selection,
     UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowControlArea, WindowHandle,
-    WindowId, WindowOptions, canvas, deferred, div, img, prelude::*, px, relative, rgb, rgba, size,
-    svg, uniform_list,
+    WindowId, WindowOptions, anchored, canvas, deferred, div, img, prelude::*, px, relative, rgb,
+    rgba, size, svg, uniform_list,
 };
 use rustgrid_config::{
     AppSettings, ConfigStore, ConnectionGroup, DEFAULT_EDITOR_FONT_SIZE, FieldLayout, GroupEntry,
@@ -94,6 +94,13 @@ gpui::actions!(
         RenameQueryFile,
         SelectAllQueries
     ]
+);
+
+// Transfer-configuration list actions: Enter opens the selected configuration, Delete deletes it
+// and Ctrl+A selects every visible row, matching the other main-tab lists.
+gpui::actions!(
+    transferlist,
+    [OpenTransferConfig, DeleteTransferConfig, SelectAllTransfers]
 );
 
 // Query-editor actions. The editor's own undo/redo bindings handle Ctrl+Z; `RunQuery` and
@@ -254,6 +261,9 @@ const BACKUP_LIST_CONTEXT: &str = "BackupList";
 
 /// Key context applied to the saved-query file list.
 const QUERY_LIST_CONTEXT: &str = "QueryList";
+
+/// Key context applied to the Transfer main tab's saved-configuration list.
+const TRANSFER_LIST_CONTEXT: &str = "TransferList";
 
 /// Key context applied to the grid status bar's selectable SQL line, so Ctrl+C / Ctrl+A reach it
 /// instead of the `Root` context's copy/select-all.
@@ -1306,6 +1316,12 @@ enum ContextTarget {
     QueryFile {
         index: usize,
     },
+    /// A saved transfer configuration in the Transfer main tab's list.
+    TransferConfig {
+        index: usize,
+    },
+    /// The blank area of the Transfer main tab's list.
+    TransferList,
     /// The blank area of the Backup main tab's list.
     BackupList,
     /// The blank area of the Queries main tab's list.
@@ -1513,6 +1529,9 @@ struct TreePane {
     selected_table: Option<(usize, usize, String, bool)>,
     /// The in-place rename editor to draw in the matching row this frame, if it belongs here.
     rename_row: Option<RenameRow>,
+    /// Whether a connection-group rename editor is open somewhere in this tree. Typing then
+    /// belongs to that editor, not to the tree's type-ahead.
+    group_renaming: bool,
     /// Focus target for the tree, so F2 reaches [`AppView::begin_rename_table`].
     focus: FocusHandle,
     theme: Theme,
@@ -1755,6 +1774,13 @@ enum DeleteConfirm {
         connection_index: usize,
         database_index: usize,
         names: Vec<String>,
+    },
+    /// Empty or truncate several selected tables at once.
+    TablesOperation {
+        connection_index: usize,
+        database_index: usize,
+        names: Vec<String>,
+        operation: TableOperation,
     },
     /// Delete a saved query from the saved-query list.
     SavedQuery { index: usize },
@@ -2139,6 +2165,10 @@ pub struct AppView {
     query_editors: Vec<Option<Entity<ui::SqlEditor>>>,
     /// Read-only SQL preview editors (routine/view ?? tabs), keyed by tab fingerprint.
     preview_editors: std::collections::HashMap<String, Entity<ui::SqlEditor>>,
+    /// The diff highlights last applied to each read-only preview (the transfer window's DDL
+    /// panes), so they are pushed again only when the text or the marks change.
+    preview_decorations:
+        std::collections::HashMap<String, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>>,
     /// Shared completion catalog, refreshed as the connection tree loads tables and columns.
     completion_catalog: Arc<std::sync::RwLock<sql_completion::CompletionCatalog>>,
     /// The saved-query 详细列表's scroll state (vertical rows, horizontal header + rows) and its
@@ -2848,7 +2878,11 @@ impl AppView {
             backup_configs,
             transfer_configs,
             backup_files: Vec::new(),
-            sync: sync::SyncState::new(cx),
+            sync: {
+                let mut sync = sync::SyncState::new(cx);
+                sync.hide_same = settings.sync_hide_same;
+                sync
+            },
             backup_selected: None,
             new_backup_dialog: None,
             restore_dialog: None,
@@ -2908,6 +2942,7 @@ impl AppView {
             grid_focus_pending: false,
             query_editors: Vec::new(),
             preview_editors: std::collections::HashMap::new(),
+            preview_decorations: std::collections::HashMap::new(),
             completion_catalog: Arc::new(std::sync::RwLock::new(
                 sql_completion::CompletionCatalog::default(),
             )),
@@ -3260,8 +3295,12 @@ impl AppView {
 
     /// Re-translate the search fields' baked-in placeholders after a language change. Most
     /// placeholders resolve through `t!` on every render (or when their transient dialog/window is
-    /// created), but the four shared search boxes are built once with the startup locale, so their
-    /// text has to be pushed explicitly or it stays in the previous language.
+    /// created), but the shared search boxes live in `AppView` (or a long-lived child state) and
+    /// are built once with the locale of that moment, so their text has to be pushed explicitly or
+    /// it stays in the previous language. The Options window's shortcut search and the Sync
+    /// window's table search are in that set even though their windows are re-opened later: the
+    /// entities survive the window (the Options one is even built before the language is applied),
+    /// so a language change has to retranslate them too.
     fn sync_search_placeholders(&mut self, cx: &mut Context<'_, Self>) {
         self.object_search_input.update(cx, |input, cx| {
             input.set_placeholder(t!("object.search").to_string(), cx);
@@ -3272,6 +3311,12 @@ impl AppView {
         self.backup_search_input.update(cx, |input, cx| {
             input.set_placeholder(t!("backup.search").to_string(), cx);
         });
+        self.routine_find_input.update(cx, |input, cx| {
+            input.set_placeholder(t!("routine.find").to_string(), cx);
+        });
+        self.sync.search_input.update(cx, |input, cx| {
+            input.set_placeholder(t!("sync.search").to_string(), cx);
+        });
         self.sync.transfer_search_input.update(cx, |input, cx| {
             input.set_placeholder(t!("sync.config.search").to_string(), cx);
         });
@@ -3280,9 +3325,16 @@ impl AppView {
                 input.set_placeholder(t!("sync.config.name_placeholder").to_string(), cx);
             });
         }
-        self.routine_find_input.update(cx, |input, cx| {
-            input.set_placeholder(t!("routine.find").to_string(), cx);
-        });
+        if let Some(input) = self.options_shortcut_search.clone() {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(t!("keymap.search").to_string(), cx);
+            });
+        }
+        // The grids' 字段筛选 search box is built with each grid, not per popup, so it does not pick
+        // up a locale change by itself either.
+        for grid in &self.grids {
+            grid.update(cx, |grid, cx| grid.sync_search_placeholder(cx));
+        }
     }
 
     /// Show or hide the right-hand object-info pane and remember the choice, so the next launch
@@ -3372,6 +3424,7 @@ impl AppView {
             grid_field_layouts: self.grid_field_layouts.clone(),
             grid_show_comments: self.grid_show_comments,
             grid_show_types: self.grid_show_types,
+            sync_hide_same: self.sync.hide_same,
             shortcuts: self.shortcuts.clone(),
             preserve_object_search: self.preserve_object_search,
             restore_session: self.restore_session,
@@ -3471,13 +3524,13 @@ impl AppView {
         true
     }
 
-    /// The SQL editors the app owns in the main window: query editors, their 信息 logs and the
-    /// routine/view SQL 预览 panes.
+    /// The SQL editors the app owns in the main window: the query editors and the routine/view
+    /// SQL 预览 panes. The result 信息 log is excluded because it keeps a fixed 12px font.
     fn open_sql_editors(&self) -> Vec<Entity<ui::SqlEditor>> {
         self.query_editors
             .iter()
             .flatten()
-            .chain(self.query_info_editors.values())
+            // The result/信息 log is deliberately not zoomed; it stays at its fixed 12px.
             .chain(self.preview_editors.values())
             .cloned()
             .collect()
@@ -3511,13 +3564,13 @@ impl AppView {
                 editor.set_display_options(font.clone(), size, line_numbers, word_wrap, window, cx)
             });
         }
-        let plain: Vec<Entity<ui::SqlEditor>> = self
-            .query_info_editors
-            .values()
-            .chain(self.preview_editors.values())
-            .cloned()
-            .collect();
-        for editor in plain {
+        // The result/信息 log is fixed at 12px; only the SQL 预览 panes follow the editor font.
+        for editor in self.query_info_editors.values() {
+            editor.update(cx, |editor, cx| {
+                editor.set_display_options(font.clone(), 12.0, false, word_wrap, window, cx)
+            });
+        }
+        for editor in self.preview_editors.values() {
             editor.update(cx, |editor, cx| {
                 editor.set_display_options(font.clone(), size, false, word_wrap, window, cx)
             });
@@ -4465,7 +4518,7 @@ impl Render for AppView {
         }
 
         if let Some(menu) = self.context_menu.as_ref() {
-            root = root.child(self.render_context_menu(menu, cx));
+            root = root.child(self.render_context_menu(menu, window, cx));
         }
 
         // The connection-tree drag-and-drop drop indicator, drawn in window coordinates so it

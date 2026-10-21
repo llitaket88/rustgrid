@@ -129,6 +129,7 @@ impl Render for TextTooltip {
             .py_1()
             .rounded_sm()
             .bg(theme.popover)
+            .text_color(theme.popover_foreground)
             .border_1()
             .border_color(theme.border)
             .text_size(px(12.0))

@@ -100,10 +100,10 @@ impl AppView {
     pub(super) fn render_context_menu(
         &self,
         menu: &ContextMenu,
+        _window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let theme = self.theme;
-
         let mut items = div().flex().flex_col().w(px(170.0)).p_0p5();
 
         match &menu.target {
@@ -700,11 +700,30 @@ impl AppView {
                             t!("object.empty_table").to_string(),
                             cx.listener(move |this, _event, _window, cx| {
                                 this.context_menu = None;
-                                this.delete_confirm = Some(DeleteConfirm::Table {
-                                    connection_index: ci,
-                                    database_index: di,
-                                    name: empty_name.clone(),
-                                    operation: TableOperation::Empty,
+                                let selected = pane == RowPane::Objects
+                                    && this.objects_selection.contains(&empty_name);
+                                let mut names = if selected {
+                                    this.objects_selection.items()
+                                } else {
+                                    Vec::new()
+                                };
+                                if names.is_empty() {
+                                    names.push(empty_name.clone());
+                                }
+                                this.delete_confirm = Some(if names.len() == 1 {
+                                    DeleteConfirm::Table {
+                                        connection_index: ci,
+                                        database_index: di,
+                                        name: names.remove(0),
+                                        operation: TableOperation::Empty,
+                                    }
+                                } else {
+                                    DeleteConfirm::TablesOperation {
+                                        connection_index: ci,
+                                        database_index: di,
+                                        names,
+                                        operation: TableOperation::Empty,
+                                    }
                                 });
                                 cx.notify();
                             }),
@@ -714,11 +733,30 @@ impl AppView {
                             t!("object.truncate_table").to_string(),
                             cx.listener(move |this, _event, _window, cx| {
                                 this.context_menu = None;
-                                this.delete_confirm = Some(DeleteConfirm::Table {
-                                    connection_index: ci,
-                                    database_index: di,
-                                    name: truncate_name.clone(),
-                                    operation: TableOperation::Truncate,
+                                let selected = pane == RowPane::Objects
+                                    && this.objects_selection.contains(&truncate_name);
+                                let mut names = if selected {
+                                    this.objects_selection.items()
+                                } else {
+                                    Vec::new()
+                                };
+                                if names.is_empty() {
+                                    names.push(truncate_name.clone());
+                                }
+                                this.delete_confirm = Some(if names.len() == 1 {
+                                    DeleteConfirm::Table {
+                                        connection_index: ci,
+                                        database_index: di,
+                                        name: names.remove(0),
+                                        operation: TableOperation::Truncate,
+                                    }
+                                } else {
+                                    DeleteConfirm::TablesOperation {
+                                        connection_index: ci,
+                                        database_index: di,
+                                        names,
+                                        operation: TableOperation::Truncate,
+                                    }
                                 });
                                 cx.notify();
                             }),
@@ -1076,6 +1114,40 @@ impl AppView {
                         }),
                     ));
             }
+            ContextTarget::TransferConfig { index } => {
+                let index = *index;
+                items = items
+                    .child(self.context_item(
+                        "transfer-ctx-open",
+                        t!("backup.open").to_string(),
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.context_menu = None;
+                            this.open_transfer_config(index, cx);
+                        }),
+                    ))
+                    .child(div().h(px(1.0)).my_1().bg(rgb(theme.border)))
+                    .child(self.context_item(
+                        "transfer-ctx-delete",
+                        t!("sync.delete").to_string(),
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.context_menu = None;
+                            if let Some(key) = this.transfer_key(index) {
+                                this.hit_transfer(&key, Modifiers::default(), cx);
+                            }
+                            this.confirm_delete_transfer(cx);
+                        }),
+                    ));
+            }
+            ContextTarget::TransferList => {
+                items = items.child(self.context_item(
+                    "transferlist-ctx-new",
+                    t!("sync.new").to_string(),
+                    cx.listener(|this, _event, _window, cx| {
+                        this.context_menu = None;
+                        this.open_new_transfer(cx);
+                    }),
+                ));
+            }
             ContextTarget::BackupList => {
                 items = items
                     .child(self.context_item(
@@ -1273,32 +1345,41 @@ impl AppView {
             }
         }
 
-        ui::popup_panel(theme)
-            .left(menu.position.x)
-            .top(menu.position.y)
-            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                // The 转储 SQL 文件, 管理分组, 颜色 and 导入连接 flyouts overflow past this panel, so
-                // a click on one also reads as "outside" here. Keep the menu alive when the click is
-                // on a flyout (their zones are only populated while they are shown).
-                let on_flyout = [
-                    &this.dump_zone,
-                    &this.move_zone,
-                    &this.color_zone,
-                    &this.import_zone,
-                ]
-                .iter()
-                .any(|zone| zone.borrow().contains(&event.position));
-                if on_flyout {
-                    return;
-                }
-                this.context_menu = None;
-                this.dump_submenu = None;
-                this.move_submenu = None;
-                this.color_submenu = None;
-                this.import_submenu = false;
-                cx.notify();
-            }))
-            .child(items)
+        // The panel places itself from the pointer through `anchored`, which measures the menu
+        // after layout: a menu opened near the bottom edge switches its anchor corner and grows
+        // upward from the click instead of being clamped by a guessed height; the old fixed
+        // estimate pushed a short menu far above the row it belonged to.
+        anchored()
+            .position(menu.position)
+            .anchor(Anchor::TopLeft)
+            .child(
+                ui::popup_panel(theme)
+                    .relative()
+                    .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        // The 转储 SQL 文件, 管理分组, 颜色 and 导入连接 flyouts overflow past this
+                        // panel, so a click on one also reads as "outside" here. Keep the menu
+                        // alive when the click is on a flyout (their zones are only populated
+                        // while they are shown).
+                        let on_flyout = [
+                            &this.dump_zone,
+                            &this.move_zone,
+                            &this.color_zone,
+                            &this.import_zone,
+                        ]
+                        .iter()
+                        .any(|zone| zone.borrow().contains(&event.position));
+                        if on_flyout {
+                            return;
+                        }
+                        this.context_menu = None;
+                        this.dump_submenu = None;
+                        this.move_submenu = None;
+                        this.color_submenu = None;
+                        this.import_submenu = false;
+                        cx.notify();
+                    }))
+                    .child(items),
+            )
     }
 
     pub(super) fn render_tab_menu(
@@ -1332,14 +1413,18 @@ impl AppView {
                 cx.listener(|this, _event, _window, cx| this.close_all_tabs(cx)),
             ));
 
-        ui::popup_panel(theme)
-            .left(menu.position.x)
-            .top(menu.position.y)
-            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                this.tab_menu = None;
-                cx.notify();
-            }))
-            .child(items)
+        anchored()
+            .position(menu.position)
+            .anchor(Anchor::TopLeft)
+            .child(
+                ui::popup_panel(theme)
+                    .relative()
+                    .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                        this.tab_menu = None;
+                        cx.notify();
+                    }))
+                    .child(items),
+            )
     }
 
     /// Wraps a submenu trigger row so its window-space rectangle can be recorded into the
